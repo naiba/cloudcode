@@ -34,8 +34,9 @@
         <button hx-delete="/instances/{{.ID}}"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
+                hx-disabled-elt="this"
                 hx-confirm="Are you sure you want to delete instance '{{.Name}}'? This will destroy the container."
-                class="btn btn-sm btn-danger">Delete</button>
+                class="btn btn-sm btn-danger"><span class="htmx-indicator spinner"></span>Delete</button>
     </td>
 </tr>
 {{end}}

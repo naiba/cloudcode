@@ -84,15 +84,26 @@ document.addEventListener('htmx:beforeSwap', function(event) {
     }
 });
 
+function getToastContainer() {
+    var c = document.getElementById('toast-container');
+    if (!c) {
+        c = document.createElement('div');
+        c.id = 'toast-container';
+        c.className = 'toast-container';
+        document.body.appendChild(c);
+    }
+    return c;
+}
+
 function showToast(message, type) {
+    var container = getToastContainer();
     var toast = document.createElement('div');
-    toast.className = 'alert alert-' + (type || 'error');
-    toast.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999;max-width:400px';
-    toast.textContent = message;
-    document.body.appendChild(toast);
+    toast.className = 'toast toast-' + (type || 'error');
+    toast.innerHTML = '<div class="toast-bar"></div><div class="toast-body"></div><div class="toast-progress"></div>';
+    toast.querySelector('.toast-body').textContent = message;
+    container.appendChild(toast);
     setTimeout(function() {
-        toast.style.opacity = '0';
-        toast.style.transition = 'opacity 0.3s';
-        setTimeout(function() { toast.remove(); }, 300);
+        toast.classList.add('toast-exit');
+        setTimeout(function() { toast.remove(); }, 250);
     }, 5000);
 }

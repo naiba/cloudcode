@@ -8,6 +8,9 @@
     <script>
     (function(){var t=localStorage.getItem('theme');if(!t||t==='auto'){t=window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}if(t==='light'){document.documentElement.setAttribute('data-theme','light')}})();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <link rel="stylesheet" href="/static/css/style.css?v={{version}}">
 </head>
@@ -36,6 +39,7 @@
         </div>
     </footer>
     <script src="/static/js/app.js?v={{version}}"></script>
+    <script>(function(){var p=location.pathname;document.querySelectorAll('.nav-links a').forEach(function(a){var h=a.getAttribute('href');if(h==='/settings'?p.startsWith('/settings'):!p.startsWith('/settings'))a.classList.add('active')})})()</script>
 </body>
 </html>
 {{end}}

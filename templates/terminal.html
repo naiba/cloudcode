@@ -16,15 +16,25 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
 <script>
 (function() {
+    var isDark = !document.documentElement.hasAttribute('data-theme') || document.documentElement.getAttribute('data-theme') !== 'light';
     var term = new Terminal({
         cursorBlink: true,
         fontSize: 14,
-        fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
-        theme: {
-            background: '#0f1117',
-            foreground: '#e4e6ed',
-            cursor: '#6366f1',
-            selectionBackground: 'rgba(99,102,241,0.3)'
+        fontFamily: "'IBM Plex Mono', 'Consolas', monospace",
+        theme: isDark ? {
+            background: '#0a0b0f',
+            foreground: '#e8e9ed',
+            cursor: '#e2a052',
+            selectionBackground: 'rgba(226,160,82,0.25)',
+            black: '#12131a',
+            brightBlack: '#484c5e'
+        } : {
+            background: '#f5f5f0',
+            foreground: '#1a1a1a',
+            cursor: '#c07a28',
+            selectionBackground: 'rgba(192,122,40,0.2)',
+            black: '#ddd9d0',
+            brightBlack: '#a5a39e'
         }
     });
 
