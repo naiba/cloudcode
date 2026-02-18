@@ -124,6 +124,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Reverse proxy to opencode web UI
 	mux.HandleFunc("/instance/{id}/", h.handleProxy)
+
+	// Catch-all: route non-platform requests to containers via Referer header
+	mux.HandleFunc("/", h.handleCatchAll)
 }
 
 // --- Page handlers ---
@@ -189,7 +192,7 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		Name:    name,
 		Status:  "created",
 		Port:    port,
-		WorkDir: "/workspace",
+		WorkDir: "/root",
 		EnvVars: make(map[string]string),
 	}
 
@@ -405,6 +408,8 @@ func (h *Handler) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err != nil {
+			_ = conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "logs stream ended"))
 			return
 		}
 	}
@@ -431,9 +436,58 @@ func (h *Handler) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": inst.Status})
 }
 
+const instanceCookieName = "_cc_inst"
+
 func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	http.SetCookie(w, &http.Cookie{
+		Name:     instanceCookieName,
+		Value:    id,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 	h.proxy.ServeHTTP(w, r, id)
+}
+
+func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
+	instanceID := h.resolveInstanceID(r)
+	if instanceID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	h.proxy.ServeHTTPDirect(w, r, instanceID)
+}
+
+func (h *Handler) resolveInstanceID(r *http.Request) string {
+	if id := extractInstanceIDFromReferer(r); id != "" {
+		return id
+	}
+	if c, err := r.Cookie(instanceCookieName); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return ""
+}
+
+func extractInstanceIDFromReferer(r *http.Request) string {
+	referer := r.Header.Get("Referer")
+	if referer == "" {
+		return ""
+	}
+
+	const prefix = "/instance/"
+	idx := strings.Index(referer, prefix)
+	if idx == -1 {
+		return ""
+	}
+
+	rest := referer[idx+len(prefix):]
+	slashIdx := strings.Index(rest, "/")
+	if slashIdx == -1 {
+		return ""
+	}
+	return rest[:slashIdx]
 }
 
 func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,8 @@ import (
 // ReverseProxy manages dynamic reverse proxying to opencode instances.
 type ReverseProxy struct {
 	mu      sync.RWMutex
-	proxies map[string]*httputil.ReverseProxy // instanceID → proxy
+	proxies map[string]*httputil.ReverseProxy // instanceID → proxy (strips /instance/{id} prefix)
+	direct  map[string]*httputil.ReverseProxy // instanceID → proxy (forwards path as-is)
 	ports   map[string]int                    // instanceID → port
 }
 
@@ -21,6 +22,7 @@ type ReverseProxy struct {
 func New() *ReverseProxy {
 	return &ReverseProxy{
 		proxies: make(map[string]*httputil.ReverseProxy),
+		direct:  make(map[string]*httputil.ReverseProxy),
 		ports:   make(map[string]int),
 	}
 }
@@ -32,10 +34,10 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		return fmt.Errorf("parse target URL: %w", err)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
+	// Proxy that strips /instance/{id} prefix (for entry point requests)
+	stripProxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := stripProxy.Director
+	stripProxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		prefix := fmt.Sprintf("/instance/%s", instanceID)
 		if strings.HasPrefix(req.URL.Path, prefix) {
@@ -46,17 +48,28 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		}
 		req.Host = target.Host
 	}
-
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+	stripProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)
 		tmpl := template.Must(template.New("waiting").Parse(waitingPageHTML))
 		_ = tmpl.Execute(w, map[string]string{"InstanceID": instanceID})
 	}
 
+	// Proxy that forwards path as-is (for Referer-based fallback requests)
+	directProxy := httputil.NewSingleHostReverseProxy(target)
+	origDirectDirector := directProxy.Director
+	directProxy.Director = func(req *http.Request) {
+		origDirectDirector(req)
+		req.Host = target.Host
+	}
+	directProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	}
+
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
-	rp.proxies[instanceID] = proxy
+	rp.proxies[instanceID] = stripProxy
+	rp.direct[instanceID] = directProxy
 	rp.ports[instanceID] = port
 
 	return nil
@@ -67,13 +80,30 @@ func (rp *ReverseProxy) Unregister(instanceID string) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 	delete(rp.proxies, instanceID)
+	delete(rp.direct, instanceID)
 	delete(rp.ports, instanceID)
 }
 
-// ServeHTTP handles proxied requests.
+// ServeHTTP handles proxied requests, stripping /instance/{id} prefix.
 func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, instanceID string) {
 	rp.mu.RLock()
 	proxy, ok := rp.proxies[instanceID]
+	rp.mu.RUnlock()
+
+	if !ok {
+		http.Error(w, "Instance not found or not running", http.StatusBadGateway)
+		return
+	}
+
+	proxy.ServeHTTP(w, r)
+}
+
+// ServeHTTPDirect handles proxied requests, forwarding the original path as-is.
+// Used for Referer-based fallback routing where the path is already correct
+// (e.g. /assets/index-xxx.js, /global/health, WebSocket upgrades).
+func (rp *ReverseProxy) ServeHTTPDirect(w http.ResponseWriter, r *http.Request, instanceID string) {
+	rp.mu.RLock()
+	proxy, ok := rp.direct[instanceID]
 	rp.mu.RUnlock()
 
 	if !ok {
