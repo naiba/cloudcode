@@ -1,11 +1,14 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -36,7 +39,6 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		return fmt.Errorf("parse target URL: %w", err)
 	}
 
-	// Proxy that strips /instance/{id} prefix (for entry point requests)
 	stripProxy := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := stripProxy.Director
 	stripProxy.Director = func(req *http.Request) {
@@ -49,7 +51,9 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 			}
 		}
 		req.Host = target.Host
+		req.Header.Del("Accept-Encoding")
 	}
+	stripProxy.ModifyResponse = instanceStorageIsolator(instanceID)
 	stripProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -122,6 +126,55 @@ func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 	defer rp.mu.RUnlock()
 	_, ok := rp.proxies[instanceID]
 	return ok
+}
+
+func instanceStorageIsolator(instanceID string) func(*http.Response) error {
+	script := `<script>(function(){` +
+		`var k="_cc_active_inst",id="` + instanceID + `";` +
+		`if(localStorage.getItem(k)===id)return;` +
+		`var preserve={};` +
+		`["opencode-theme-id","opencode-color-scheme","theme"].forEach(function(p){` +
+		`var v=localStorage.getItem(p);if(v!==null)preserve[p]=v});` +
+		`var i=localStorage.length;while(i--){var n=localStorage.key(i);` +
+		`if(n&&n.startsWith("opencode-theme-css-")){preserve[n]=localStorage.getItem(n)}}` +
+		`i=localStorage.length;while(i--){var n=localStorage.key(i);` +
+		`if(n&&n.startsWith("opencode.global.dat:")){preserve[n]=localStorage.getItem(n)}}` +
+		`localStorage.clear();` +
+		`Object.keys(preserve).forEach(function(p){localStorage.setItem(p,preserve[p])});` +
+		`localStorage.setItem(k,id)` +
+		`})()</script>`
+
+	return func(resp *http.Response) error {
+		ct := resp.Header.Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			return nil
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+
+		injection := []byte(script)
+		headTag := []byte("<head>")
+		idx := bytes.Index(bytes.ToLower(body), headTag)
+		if idx == -1 {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			return nil
+		}
+
+		insertAt := idx + len(headTag)
+		modified := make([]byte, 0, len(body)+len(injection))
+		modified = append(modified, body[:insertAt]...)
+		modified = append(modified, injection...)
+		modified = append(modified, body[insertAt:]...)
+
+		resp.Body = io.NopCloser(bytes.NewReader(modified))
+		resp.ContentLength = int64(len(modified))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(modified)))
+		return nil
+	}
 }
 
 const waitingPageHTML = `<!DOCTYPE html>
