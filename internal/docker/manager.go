@@ -125,8 +125,7 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 				},
 			},
 			RestartPolicy: container.RestartPolicy{
-				Name:              "unless-stopped",
-				MaximumRetryCount: 3,
+				Name: "unless-stopped",
 			},
 			Resources: container.Resources{
 				Memory:   2 * 1024 * 1024 * 1024,
