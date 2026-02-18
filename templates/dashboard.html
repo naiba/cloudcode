@@ -33,8 +33,30 @@
 <dialog id="log-modal">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <h2>Container Logs</h2>
-        <button onclick="this.closest('dialog').close()" class="btn btn-sm btn-secondary">Close</button>
+        <button onclick="closeLogs()" class="btn btn-sm btn-secondary">Close</button>
     </div>
-    <pre class="log-output" id="log-modal-content">Loading...</pre>
+    <pre class="log-output" id="log-modal-content"></pre>
 </dialog>
+<script>
+var _logsWS = null;
+function openLogs(id) {
+    var el = document.getElementById('log-modal-content');
+    el.textContent = 'Connecting...';
+    document.getElementById('log-modal').showModal();
+    if (_logsWS) { _logsWS.close(); _logsWS = null; }
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _logsWS = new WebSocket(proto + '//' + location.host + '/instances/' + id + '/logs/ws');
+    _logsWS.onopen = function() { el.textContent = ''; };
+    _logsWS.onmessage = function(e) {
+        el.textContent += e.data;
+        el.scrollTop = el.scrollHeight;
+    };
+    _logsWS.onclose = function() { el.textContent += '\n[Connection closed]'; };
+    _logsWS.onerror = function() { el.textContent += '\n[Connection error]'; };
+}
+function closeLogs() {
+    if (_logsWS) { _logsWS.close(); _logsWS = null; }
+    document.getElementById('log-modal').close();
+}
+</script>
 {{end}}
