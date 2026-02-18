@@ -163,8 +163,8 @@ func (m *Manager) EditableFiles() []ConfigFileInfo {
 		{Name: "oh-my-opencode.json", RelPath: filepath.Join(DirOpenCodeConfig, "oh-my-opencode.json"), Hint: "Oh My OpenCode 配置（agent/category model assignments）"},
 		{Name: "AGENTS.md", RelPath: filepath.Join(DirOpenCodeConfig, "AGENTS.md"), Hint: "全局 Rules：自定义指令，所有实例共享（等同 ~/.config/opencode/AGENTS.md）"},
 		{Name: "auth.json", RelPath: filepath.Join(DirOpenCodeData, "auth.json"), Hint: "API 密钥和 OAuth tokens（Anthropic, OpenAI 等）"},
-		{Name: "opencode package.json", RelPath: filepath.Join(DirOpenCodeConfig, "package.json"), Hint: "OpenCode plugin 依赖"},
-		{Name: ".opencode package.json", RelPath: filepath.Join(DirDotOpenCode, "package.json"), Hint: "Core plugin 依赖"},
+		{Name: "~/.config/opencode/package.json", RelPath: filepath.Join(DirOpenCodeConfig, "package.json"), Hint: "OpenCode plugin 依赖"},
+		{Name: "~/.opencode/package.json", RelPath: filepath.Join(DirDotOpenCode, "package.json"), Hint: "Core plugin 依赖"},
 	}
 }
 

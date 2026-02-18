@@ -19,6 +19,8 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+a, a:visited, a:link { color: inherit; }
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
     background: var(--bg);
