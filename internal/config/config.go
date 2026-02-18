@@ -42,12 +42,20 @@ type ContainerMount struct {
 }
 
 type Manager struct {
-	rootDir string
+	rootDir     string
+	hostRootDir string // 宿主机上对应 rootDir 的路径，用于 Docker bind mount
 }
 
 func NewManager(dataDir string) (*Manager, error) {
 	rootDir := filepath.Join(dataDir, "config")
 	m := &Manager{rootDir: rootDir}
+
+	// 当平台运行在 Docker 容器内时，bind mount 的 source 必须是宿主机路径。
+	// 通过 HOST_DATA_DIR 环境变量指定宿主机上 dataDir 对应的路径。
+	if hostDataDir := os.Getenv("HOST_DATA_DIR"); hostDataDir != "" {
+		m.hostRootDir = filepath.Join(hostDataDir, "config")
+	}
+
 	if err := m.ensureDirs(); err != nil {
 		return nil, fmt.Errorf("ensure config dirs: %w", err)
 	}
@@ -123,17 +131,21 @@ func (m *Manager) WriteFile(relPath string, content string) error {
 }
 
 func (m *Manager) ContainerMounts() []ContainerMount {
+	root := m.rootDir
+	if m.hostRootDir != "" {
+		root = m.hostRootDir
+	}
 	return []ContainerMount{
 		{
-			HostPath:      filepath.Join(m.rootDir, DirOpenCodeConfig),
+			HostPath:      filepath.Join(root, DirOpenCodeConfig),
 			ContainerPath: "/root/.config/opencode",
 		},
 		{
-			HostPath:      filepath.Join(m.rootDir, DirOpenCodeData),
+			HostPath:      filepath.Join(root, DirOpenCodeData),
 			ContainerPath: "/root/.local/share/opencode",
 		},
 		{
-			HostPath:      filepath.Join(m.rootDir, DirDotOpenCode),
+			HostPath:      filepath.Join(root, DirDotOpenCode),
 			ContainerPath: "/root/.opencode",
 		},
 	}
