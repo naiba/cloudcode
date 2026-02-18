@@ -103,6 +103,7 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 
 	env := []string{
 		fmt.Sprintf("OPENCODE_PORT=%d", inst.Port),
+		fmt.Sprintf("CC_INSTANCE_NAME=%s", inst.Name),
 	}
 
 	if m.config != nil {
