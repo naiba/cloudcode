@@ -1,8 +1,6 @@
 services:
   cloudcode:
-    build:
-      context: .
-      dockerfile: Dockerfile.platform
+    image: ghcr.io/naiba/cloudcode:latest
     ports:
       - "8080:8080"
     volumes:

@@ -17,23 +17,14 @@
 ### Docker Compose（推荐）
 
 ```bash
-git clone https://github.com/naiba/cloudcode.git
-cd cloudcode
+mkdir cloudcode && cd cloudcode
+curl -O https://raw.githubusercontent.com/naiba/cloudcode/main/docker-compose.yml
 docker compose up -d
 ```
 
 浏览器打开 http://localhost:8080。
 
-### 手动部署
-
-```bash
-# 1. 构建 base 镜像（实例运行所需）
-docker build -t cloudcode-base:latest -f docker/Dockerfile docker/
-
-# 2. 构建并运行平台
-go build -o bin/cloudcode .
-./bin/cloudcode --addr :8080 --image cloudcode-base:latest
-```
+镜像从 `ghcr.io/naiba/cloudcode` 和 `ghcr.io/naiba/cloudcode-base` 自动拉取。
 
 ## 架构
 

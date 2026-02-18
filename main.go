@@ -25,7 +25,7 @@ func main() {
 	var (
 		addr     = flag.String("addr", ":8080", "HTTP listen address")
 		dataDir  = flag.String("data", "./data", "Data directory for SQLite database")
-		imgName  = flag.String("image", "cloudcode-base:latest", "Docker image name for opencode instances")
+		imgName  = flag.String("image", "ghcr.io/naiba/cloudcode-base:latest", "Docker image name for opencode instances")
 		noDocker = flag.Bool("no-docker", false, "Skip Docker initialization (for UI preview)")
 	)
 	flag.Parse()

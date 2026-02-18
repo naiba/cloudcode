@@ -22,7 +22,7 @@ const (
 	labelPrefix     = "cloudcode."
 	labelManaged    = labelPrefix + "managed"
 	labelInstID     = labelPrefix + "instance-id"
-	defaultImage    = "cloudcode-base:latest"
+	defaultImage    = "ghcr.io/naiba/cloudcode-base:latest"
 	networkName     = "cloudcode-net"
 	containerPrefix = "cloudcode-"
 )

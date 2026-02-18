@@ -17,23 +17,14 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 ### Docker Compose (Recommended)
 
 ```bash
-git clone https://github.com/naiba/cloudcode.git
-cd cloudcode
+mkdir cloudcode && cd cloudcode
+curl -O https://raw.githubusercontent.com/naiba/cloudcode/main/docker-compose.yml
 docker compose up -d
 ```
 
 Open http://localhost:8080 in your browser.
 
-### Manual Setup
-
-```bash
-# 1. Build the base image (required for instances)
-docker build -t cloudcode-base:latest -f docker/Dockerfile docker/
-
-# 2. Build and run the platform
-go build -o bin/cloudcode .
-./bin/cloudcode --addr :8080 --image cloudcode-base:latest
-```
+Images are pulled from `ghcr.io/naiba/cloudcode` and `ghcr.io/naiba/cloudcode-base` automatically.
 
 ## Architecture
 
