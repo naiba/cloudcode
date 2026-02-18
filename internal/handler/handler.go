@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 
 	"github.com/naiba/cloudcode/internal/config"
 	"github.com/naiba/cloudcode/internal/docker"
@@ -116,8 +117,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /instances/{id}/start", h.handleStartInstance)
 	mux.HandleFunc("POST /instances/{id}/stop", h.handleStopInstance)
 	mux.HandleFunc("POST /instances/{id}/restart", h.handleRestartInstance)
-	mux.HandleFunc("GET /instances/{id}/logs", h.handleInstanceLogs)
+	mux.HandleFunc("GET /instances/{id}/logs/ws", h.handleLogsWS)
 	mux.HandleFunc("GET /instances/{id}/status", h.handleInstanceStatus)
+	mux.HandleFunc("GET /instances/{id}/terminal", h.handleTerminalPage)
+	mux.HandleFunc("GET /instances/{id}/terminal/ws", h.handleTerminalWS)
 
 	// Reverse proxy to opencode web UI
 	mux.HandleFunc("/instance/{id}/", h.handleProxy)
@@ -200,6 +203,7 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Error creating container for %s: %v", inst.ID, err)
 		inst.Status = "error"
+		inst.ErrorMsg = err.Error()
 		_ = h.store.Update(inst)
 	} else {
 		inst.ContainerID = containerID
@@ -281,22 +285,27 @@ func (h *Handler) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if inst.ContainerID == "" {
-		// Create new container
 		containerID, err := h.docker.CreateContainer(r.Context(), inst)
 		if err != nil {
+			inst.Status = "error"
+			inst.ErrorMsg = err.Error()
+			_ = h.store.Update(inst)
 			respondError(w, "Failed to create container: "+err.Error())
 			return
 		}
 		inst.ContainerID = containerID
 	} else {
-		// Start existing container
 		if err := h.docker.StartContainer(r.Context(), inst.ContainerID); err != nil {
+			inst.Status = "error"
+			inst.ErrorMsg = err.Error()
+			_ = h.store.Update(inst)
 			respondError(w, "Failed to start container: "+err.Error())
 			return
 		}
 	}
 
 	inst.Status = "running"
+	inst.ErrorMsg = ""
 	_ = h.store.Update(inst)
 	_ = h.proxy.Register(inst.ID, inst.Port)
 
@@ -348,7 +357,7 @@ func (h *Handler) handleRestartInstance(w http.ResponseWriter, r *http.Request) 
 	h.renderPartial(w, "instance_row", inst)
 }
 
-func (h *Handler) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	inst, err := h.store.Get(id)
 	if err != nil {
@@ -356,21 +365,49 @@ func (h *Handler) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if inst.ContainerID == "" {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "No container associated with this instance.")
+	if inst.ContainerID == "" || h.docker == nil {
+		http.Error(w, "Container not available", http.StatusBadRequest)
 		return
 	}
 
-	logs, err := h.docker.ContainerLogs(r.Context(), inst.ContainerID, "200")
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintf(w, "Error fetching logs: %v", err)
+		log.Printf("WebSocket upgrade failed for logs: %v", err)
 		return
 	}
+	defer conn.Close()
 
-	w.Header().Set("Content-Type", "text/plain")
-	fmt.Fprint(w, logs)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	reader, err := h.docker.ContainerLogsStream(ctx, inst.ContainerID, "200")
+	if err != nil {
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to stream logs: "+err.Error()))
+		return
+	}
+	defer reader.Close()
+
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				cancel()
+				return
+			}
+		}
+	}()
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			if writeErr := conn.WriteMessage(websocket.TextMessage, buf[:n]); writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func (h *Handler) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
@@ -607,6 +644,109 @@ func (h *Handler) renderPartial(w http.ResponseWriter, name string, data interfa
 		log.Printf("Partial render error (%s): %v", name, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func (h *Handler) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	inst, err := h.store.Get(id)
+	if err != nil {
+		http.Error(w, "Instance not found", http.StatusNotFound)
+		return
+	}
+
+	data := map[string]interface{}{
+		"Instance": inst,
+		"Title":    fmt.Sprintf("CloudCode - %s Terminal", inst.Name),
+	}
+	h.render(w, "terminal", data)
+}
+
+func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	inst, err := h.store.Get(id)
+	if err != nil {
+		http.Error(w, "Instance not found", http.StatusNotFound)
+		return
+	}
+
+	if inst.ContainerID == "" || h.docker == nil {
+		http.Error(w, "Container not available", http.StatusBadRequest)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ctx := r.Context()
+
+	execID, err := h.docker.ExecCreate(ctx, inst.ContainerID, []string{"/bin/bash", "-l"})
+	if err != nil {
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to create exec: "+err.Error()))
+		return
+	}
+
+	hijacked, err := h.docker.ExecAttach(ctx, execID)
+	if err != nil {
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to attach exec: "+err.Error()))
+		return
+	}
+	defer hijacked.Close()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := hijacked.Reader.Read(buf)
+			if n > 0 {
+				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	type resizeMsg struct {
+		Type string `json:"type"`
+		Cols uint   `json:"cols"`
+		Rows uint   `json:"rows"`
+	}
+
+	go func() {
+		for {
+			msgType, msg, err := conn.ReadMessage()
+			if err != nil {
+				_ = hijacked.CloseWrite()
+				return
+			}
+
+			if msgType == websocket.TextMessage && len(msg) > 0 && msg[0] == '{' {
+				var rm resizeMsg
+				if json.Unmarshal(msg, &rm) == nil && rm.Type == "resize" {
+					_ = h.docker.ExecResize(ctx, execID, rm.Rows, rm.Cols)
+					continue
+				}
+			}
+
+			if _, err := hijacked.Conn.Write(msg); err != nil {
+				return
+			}
+		}
+	}()
+
+	<-done
 }
 
 func respondError(w http.ResponseWriter, msg string) {

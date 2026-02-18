@@ -194,7 +194,7 @@ func (m *Manager) RemoveContainer(ctx context.Context, containerID string) error
 	return err
 }
 
-func (m *Manager) ContainerLogs(ctx context.Context, containerID string, tail string) (string, error) {
+func (m *Manager) ContainerLogsStream(ctx context.Context, containerID string, tail string) (io.ReadCloser, error) {
 	if tail == "" {
 		tail = "100"
 	}
@@ -204,18 +204,12 @@ func (m *Manager) ContainerLogs(ctx context.Context, containerID string, tail st
 		ShowStderr: true,
 		Tail:       tail,
 		Timestamps: true,
+		Follow:     true,
 	})
 	if err != nil {
-		return "", fmt.Errorf("get container logs: %w", err)
+		return nil, fmt.Errorf("stream container logs: %w", err)
 	}
-	defer reader.Close()
-
-	out, err := io.ReadAll(reader)
-	if err != nil {
-		return "", fmt.Errorf("read logs: %w", err)
-	}
-
-	return string(out), nil
+	return reader, nil
 }
 
 func (m *Manager) ContainerStatus(ctx context.Context, containerID string) (string, error) {
@@ -240,6 +234,36 @@ func (m *Manager) ImageExists(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return len(result.Items) > 0, nil
+}
+
+func (m *Manager) ExecCreate(ctx context.Context, containerID string, cmd []string) (string, error) {
+	result, err := m.cli.ExecCreate(ctx, containerID, client.ExecCreateOptions{
+		TTY:          true,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          cmd,
+	})
+	if err != nil {
+		return "", fmt.Errorf("exec create: %w", err)
+	}
+	return result.ID, nil
+}
+
+func (m *Manager) ExecAttach(ctx context.Context, execID string) (client.HijackedResponse, error) {
+	resp, err := m.cli.ExecAttach(ctx, execID, client.ExecAttachOptions{TTY: true})
+	if err != nil {
+		return client.HijackedResponse{}, fmt.Errorf("exec attach: %w", err)
+	}
+	return resp.HijackedResponse, nil
+}
+
+func (m *Manager) ExecResize(ctx context.Context, execID string, height, width uint) error {
+	_, err := m.cli.ExecResize(ctx, execID, client.ExecResizeOptions{
+		Height: height,
+		Width:  width,
+	})
+	return err
 }
 
 func (m *Manager) Close() error {

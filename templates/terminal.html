@@ -1,0 +1,72 @@
+{{define "content"}}
+<div class="header-row">
+    <h1>{{.Instance.Name}} — Terminal</h1>
+    <div style="display:flex;gap:12px">
+        <a href="/instances/{{.Instance.ID}}" class="btn btn-secondary">Back to Detail</a>
+    </div>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden">
+    <div id="terminal" style="height:calc(100vh - 220px);min-height:400px"></div>
+</div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+<script>
+(function() {
+    var term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+        theme: {
+            background: '#0f1117',
+            foreground: '#e4e6ed',
+            cursor: '#6366f1',
+            selectionBackground: 'rgba(99,102,241,0.3)'
+        }
+    });
+
+    var fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(wsProto + '//' + location.host + '/instances/{{.Instance.ID}}/terminal/ws');
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function() {
+        ws.send(JSON.stringify({type: 'resize', cols: term.cols, rows: term.rows}));
+    };
+
+    ws.onmessage = function(e) {
+        if (e.data instanceof ArrayBuffer) {
+            term.write(new Uint8Array(e.data));
+        } else {
+            term.write(e.data);
+        }
+    };
+
+    ws.onclose = function() {
+        term.write('\r\n\x1b[31mConnection closed.\x1b[0m\r\n');
+    };
+
+    term.onData(function(data) {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(new TextEncoder().encode(data));
+        }
+    });
+
+    term.onResize(function(size) {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({type: 'resize', cols: size.cols, rows: size.rows}));
+        }
+    });
+
+    window.addEventListener('resize', function() { fitAddon.fit(); });
+})();
+</script>
+{{end}}
