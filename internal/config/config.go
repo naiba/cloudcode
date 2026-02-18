@@ -204,6 +204,68 @@ func (m *Manager) ListDirFiles(dirName string) ([]DirFileInfo, error) {
 	return files, nil
 }
 
+func (m *Manager) SyncAgentSkills() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+
+	srcDir := filepath.Join(homeDir, ".agents", "skills")
+	dstDir := filepath.Join(m.rootDir, DirOpenCodeConfig, "skills")
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", srcDir, err)
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		srcSkill := filepath.Join(srcDir, e.Name())
+		dstSkill := filepath.Join(dstDir, e.Name())
+
+		if err := os.RemoveAll(dstSkill); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", dstSkill, err)
+		}
+		if err := copyDir(srcSkill, dstSkill); err != nil {
+			return fmt.Errorf("copy skill %s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0750); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		srcPath := filepath.Join(src, e.Name())
+		dstPath := filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			data, err := os.ReadFile(srcPath)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dstPath, data, 0640); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (m *Manager) DeleteFile(relPath string) error {
 	p := filepath.Join(m.rootDir, relPath)
 	if err := os.Remove(p); err != nil {

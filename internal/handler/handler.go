@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -107,6 +110,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /settings/dir-files", h.handleListDirFiles)
 	mux.HandleFunc("POST /settings/dir-file", h.handleSaveDirFile)
 	mux.HandleFunc("DELETE /settings/dir-file", h.handleDeleteDirFile)
+	mux.HandleFunc("POST /settings/install-skill", h.handleInstallSkill)
 
 	// Instance CRUD (HTMX endpoints)
 	mux.HandleFunc("POST /instances", h.handleCreateInstance)
@@ -808,6 +812,58 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-done
+}
+
+// skillSourcePattern validates skill source format: owner/repo
+var skillSourcePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+
+func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+	source := strings.TrimSpace(r.FormValue("source"))
+	skills := strings.TrimSpace(r.FormValue("skills"))
+
+	if source == "" {
+		respondError(w, "Source is required (e.g. vercel-labs/agent-skills)")
+		return
+	}
+	if !skillSourcePattern.MatchString(source) {
+		respondError(w, "Invalid source format. Use owner/repo (e.g. vercel-labs/agent-skills)")
+		return
+	}
+
+	args := []string{"skills", "add", source, "-g", "-y", "--agent", "opencode"}
+	if skills != "" {
+		args = append(args, "--skill", skills)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "npx", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	log.Printf("Installing skill: npx %s", strings.Join(args, " "))
+	if err := cmd.Run(); err != nil {
+		log.Printf("Skill install failed: %v, stderr: %s", err, stderr.String())
+		respondError(w, fmt.Sprintf("Install failed: %v", err))
+		return
+	}
+
+	if err := h.config.SyncAgentSkills(); err != nil {
+		log.Printf("Skill sync failed: %v", err)
+		respondError(w, "Installed but sync failed: "+err.Error())
+		return
+	}
+
+	log.Printf("Skill installed successfully from %s", source)
+	w.Header().Set("HX-Redirect", "/settings")
+	w.WriteHeader(http.StatusOK)
 }
 
 func respondError(w http.ResponseWriter, msg string) {
