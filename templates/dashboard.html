@@ -10,6 +10,7 @@
     <a href="/instances/new" class="btn btn-primary">Create Instance</a>
 </div>
 {{else}}
+<div class="alert alert-info">Only one Web UI can be active at a time. Opening another instance will replace the current session.</div>
 <div class="table-wrap">
     <table class="table" id="instances-table">
         <thead>

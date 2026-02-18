@@ -38,7 +38,7 @@
 
     <div class="detail-actions" id="instance-actions">
         {{if eq .Instance.Status "running"}}
-        <a href="/instance/{{.Instance.ID}}/" target="_blank" class="btn btn-success">Open Web UI</a>
+        <a href="/instance/{{.Instance.ID}}/" target="_blank" class="btn btn-success" title="Only one Web UI can be active at a time">Open Web UI</a>
         <a href="/instances/{{.Instance.ID}}/terminal" target="_blank" class="btn btn-secondary">Terminal</a>
         <button hx-post="/instances/{{.Instance.ID}}/stop"
                 hx-target="#instance-actions" hx-swap="outerHTML"

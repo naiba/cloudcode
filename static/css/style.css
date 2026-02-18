@@ -280,6 +280,11 @@ dialog::backdrop { background: rgba(0,0,0,0.6); }
     border: 1px solid var(--danger);
     color: var(--danger);
 }
+.alert-info {
+    background: rgba(59,130,246,0.1);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+}
 
 /* Nav links */
 .nav-links {
