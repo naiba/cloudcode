@@ -11,6 +11,7 @@ const (
 	DirOpenCodeConfig = "opencode"      // → /root/.config/opencode/
 	DirOpenCodeData   = "opencode-data" // → /root/.local/share/opencode/
 	DirDotOpenCode    = "dot-opencode"  // → /root/.opencode/
+	DirAgentsSkills   = "agents-skills" // → /root/.agents/skills/
 	FileEnvVars       = "env.json"
 )
 
@@ -43,15 +44,13 @@ type ContainerMount struct {
 
 type Manager struct {
 	rootDir     string
-	hostRootDir string // 宿主机上对应 rootDir 的路径，用于 Docker bind mount
+	hostRootDir string
 }
 
 func NewManager(dataDir string) (*Manager, error) {
 	rootDir := filepath.Join(dataDir, "config")
 	m := &Manager{rootDir: rootDir}
 
-	// 当平台运行在 Docker 容器内时，bind mount 的 source 必须是宿主机路径。
-	// 通过 HOST_DATA_DIR 环境变量指定宿主机上 dataDir 对应的路径。
 	if hostDataDir := os.Getenv("HOST_DATA_DIR"); hostDataDir != "" {
 		m.hostRootDir = filepath.Join(hostDataDir, "config")
 	}
@@ -71,6 +70,7 @@ func (m *Manager) ensureDirs() error {
 		filepath.Join(m.rootDir, DirOpenCodeConfig),
 		filepath.Join(m.rootDir, DirOpenCodeData),
 		filepath.Join(m.rootDir, DirDotOpenCode),
+		filepath.Join(m.rootDir, DirAgentsSkills),
 	}
 	for _, d := range OpenCodeConfigDirs {
 		dirs = append(dirs, filepath.Join(m.rootDir, DirOpenCodeConfig, d))
@@ -130,25 +130,50 @@ func (m *Manager) WriteFile(relPath string, content string) error {
 	return os.WriteFile(p, []byte(content), 0600)
 }
 
-func (m *Manager) ContainerMounts() []ContainerMount {
+func (m *Manager) ContainerMountsForInstance(instanceID string) ([]ContainerMount, error) {
+	instDataDir := filepath.Join(m.rootDir, "instances", instanceID, DirOpenCodeData)
+	if err := os.MkdirAll(instDataDir, 0750); err != nil {
+		return nil, fmt.Errorf("mkdir instance data dir: %w", err)
+	}
+
+	globalAuth := filepath.Join(m.rootDir, DirOpenCodeData, "auth.json")
+	instAuth := filepath.Join(instDataDir, "auth.json")
+	if _, err := os.Stat(instAuth); os.IsNotExist(err) {
+		if data, readErr := os.ReadFile(globalAuth); readErr == nil {
+			_ = os.WriteFile(instAuth, data, 0600)
+		}
+	}
+
 	root := m.rootDir
+	hostInstDataDir := instDataDir
 	if m.hostRootDir != "" {
 		root = m.hostRootDir
+		hostInstDataDir = filepath.Join(m.hostRootDir, "instances", instanceID, DirOpenCodeData)
 	}
+
 	return []ContainerMount{
 		{
 			HostPath:      filepath.Join(root, DirOpenCodeConfig),
 			ContainerPath: "/root/.config/opencode",
 		},
 		{
-			HostPath:      filepath.Join(root, DirOpenCodeData),
+			HostPath:      hostInstDataDir,
 			ContainerPath: "/root/.local/share/opencode",
 		},
 		{
 			HostPath:      filepath.Join(root, DirDotOpenCode),
 			ContainerPath: "/root/.opencode",
 		},
-	}
+		{
+			HostPath:      filepath.Join(root, DirAgentsSkills),
+			ContainerPath: "/root/.agents/skills",
+		},
+	}, nil
+}
+
+func (m *Manager) RemoveInstanceData(instanceID string) {
+	instDir := filepath.Join(m.rootDir, "instances", instanceID)
+	_ = os.RemoveAll(instDir)
 }
 
 type ConfigFileInfo struct {
@@ -159,12 +184,12 @@ type ConfigFileInfo struct {
 
 func (m *Manager) EditableFiles() []ConfigFileInfo {
 	return []ConfigFileInfo{
-		{Name: "opencode.jsonc", RelPath: filepath.Join(DirOpenCodeConfig, "opencode.jsonc"), Hint: "OpenCode 主配置（providers, MCP servers, plugins）"},
-		{Name: "oh-my-opencode.json", RelPath: filepath.Join(DirOpenCodeConfig, "oh-my-opencode.json"), Hint: "Oh My OpenCode 配置（agent/category model assignments）"},
-		{Name: "AGENTS.md", RelPath: filepath.Join(DirOpenCodeConfig, "AGENTS.md"), Hint: "全局 Rules：自定义指令，所有实例共享（等同 ~/.config/opencode/AGENTS.md）"},
-		{Name: "auth.json", RelPath: filepath.Join(DirOpenCodeData, "auth.json"), Hint: "API 密钥和 OAuth tokens（Anthropic, OpenAI 等）"},
-		{Name: "~/.config/opencode/package.json", RelPath: filepath.Join(DirOpenCodeConfig, "package.json"), Hint: "OpenCode plugin 依赖"},
-		{Name: "~/.opencode/package.json", RelPath: filepath.Join(DirDotOpenCode, "package.json"), Hint: "Core plugin 依赖"},
+		{Name: "opencode.jsonc", RelPath: filepath.Join(DirOpenCodeConfig, "opencode.jsonc"), Hint: "OpenCode main config (providers, MCP servers, plugins)"},
+		{Name: "oh-my-opencode.json", RelPath: filepath.Join(DirOpenCodeConfig, "oh-my-opencode.json"), Hint: "Oh My OpenCode config (agent/category model assignments)"},
+		{Name: "AGENTS.md", RelPath: filepath.Join(DirOpenCodeConfig, "AGENTS.md"), Hint: "Global rules shared across all instances (~/.config/opencode/AGENTS.md)"},
+		{Name: "auth.json", RelPath: filepath.Join(DirOpenCodeData, "auth.json"), Hint: "API keys and OAuth tokens (Anthropic, OpenAI, etc.)"},
+		{Name: "~/.config/opencode/package.json", RelPath: filepath.Join(DirOpenCodeConfig, "package.json"), Hint: "OpenCode plugin dependencies"},
+		{Name: "~/.opencode/package.json", RelPath: filepath.Join(DirDotOpenCode, "package.json"), Hint: "Core plugin dependencies"},
 	}
 }
 
@@ -202,68 +227,6 @@ func (m *Manager) ListDirFiles(dirName string) ([]DirFileInfo, error) {
 		})
 	}
 	return files, nil
-}
-
-func (m *Manager) SyncAgentSkills() error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-
-	srcDir := filepath.Join(homeDir, ".agents", "skills")
-	dstDir := filepath.Join(m.rootDir, DirOpenCodeConfig, "skills")
-
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read %s: %w", srcDir, err)
-	}
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		srcSkill := filepath.Join(srcDir, e.Name())
-		dstSkill := filepath.Join(dstDir, e.Name())
-
-		if err := os.RemoveAll(dstSkill); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", dstSkill, err)
-		}
-		if err := copyDir(srcSkill, dstSkill); err != nil {
-			return fmt.Errorf("copy skill %s: %w", e.Name(), err)
-		}
-	}
-	return nil
-}
-
-func copyDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0750); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		srcPath := filepath.Join(src, e.Name())
-		dstPath := filepath.Join(dst, e.Name())
-		if e.IsDir() {
-			if err := copyDir(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			data, err := os.ReadFile(srcPath)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(dstPath, data, 0640); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func (m *Manager) DeleteFile(relPath string) error {

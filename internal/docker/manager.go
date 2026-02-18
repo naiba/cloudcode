@@ -80,14 +80,14 @@ func (m *Manager) ensureImage(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("镜像 %s 不存在，正在拉取 ...", m.image)
+	log.Printf("Image %s not found, pulling...", m.image)
 	reader, err := m.cli.ImagePull(ctx, m.image, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pull image %s: %w", m.image, err)
 	}
 	defer reader.Close()
 	_, _ = io.Copy(io.Discard, reader)
-	log.Printf("镜像 %s 拉取完成", m.image)
+	log.Printf("Image %s pulled successfully", m.image)
 	return nil
 }
 
@@ -116,7 +116,11 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 
 	var mounts []mount.Mount
 	if m.config != nil {
-		for _, cm := range m.config.ContainerMounts() {
+		cms, err := m.config.ContainerMountsForInstance(inst.ID)
+		if err != nil {
+			return "", fmt.Errorf("prepare mounts: %w", err)
+		}
+		for _, cm := range cms {
 			absHost, _ := filepath.Abs(cm.HostPath)
 			mounts = append(mounts, mount.Mount{
 				Type:     mount.TypeBind,

@@ -5,7 +5,7 @@
 
 <div class="card">
     <h2>Environment Variables</h2>
-    <p class="hint">这些环境变量会自动注入到所有实例中（如 GH_TOKEN, ANTHROPIC_API_KEY 等）。</p>
+    <p class="hint">These environment variables are injected into all instances (e.g. GH_TOKEN, ANTHROPIC_API_KEY).</p>
     <form hx-post="/settings/env" hx-swap="none" id="env-form">
         <div id="env-rows">
             {{range $key, $val := .EnvVars}}
@@ -25,7 +25,7 @@
 
 <div class="card">
     <h2>Config Files</h2>
-    <p class="hint">这些配置文件会挂载到所有实例的对应目录中。配置目录：<code>{{.ConfigDir}}</code></p>
+    <p class="hint">These config files are bind-mounted into all instances. Config directory: <code>{{.ConfigDir}}</code></p>
 
     <div class="config-tabs">
         {{range $i, $f := .Files}}
@@ -73,33 +73,21 @@
 {{end}}
 
 <div class="card">
-    <h2>Install Skills from <a href="https://skills.sh" target="_blank" style="color:var(--primary)">skills.sh</a></h2>
-    <p class="hint">从 skills.sh 安装 Agent Skills 到全局配置，所有实例共享。安装后会自动同步到 <code>~/.config/opencode/skills/</code></p>
-    <form hx-post="/settings/install-skill" hx-swap="none" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-        <div class="form-group" style="margin-bottom:0;flex:1;min-width:200px">
-            <label for="skill-source">Source (owner/repo)</label>
-            <input type="text" id="skill-source" name="source" placeholder="e.g. vercel-labs/agent-skills" required style="width:100%">
-        </div>
-        <div class="form-group" style="margin-bottom:0;min-width:160px">
-            <label for="skill-names">Skill name (optional)</label>
-            <input type="text" id="skill-names" name="skills" placeholder="e.g. find-skills" style="width:100%">
-        </div>
-        <button type="submit" class="btn btn-primary" style="height:42px">Install</button>
-    </form>
-</div>
-
-<div class="card">
     <h2>Directory Mapping</h2>
-    <p class="hint">全局配置目录与容器内路径的映射关系：</p>
+    <p class="hint">Host-to-container directory mapping. Install <a href="https://skills.sh" target="_blank" style="color:var(--primary)">skills.sh</a> skills inside any container via <code>bunx skills add owner/repo -g -y</code> — shared across all instances.</p>
     <table class="table">
         <thead>
             <tr><th>Host Path</th><th>Container Path</th></tr>
         </thead>
         <tbody>
             <tr><td class="mono">{{.ConfigDir}}/opencode/</td><td class="mono">/root/.config/opencode/</td></tr>
-            <tr><td class="mono">{{.ConfigDir}}/opencode-data/</td><td class="mono">/root/.local/share/opencode/</td></tr>
+            <tr><td class="mono">{{.ConfigDir}}/instances/{id}/opencode-data/</td><td class="mono">/root/.local/share/opencode/</td></tr>
             <tr><td class="mono">{{.ConfigDir}}/dot-opencode/</td><td class="mono">/root/.opencode/</td></tr>
+            <tr><td class="mono">{{.ConfigDir}}/agents-skills/</td><td class="mono">/root/.agents/skills/</td></tr>
         </tbody>
+        <tfoot>
+            <tr><td colspan="2" style="font-size:0.8rem;color:var(--text-muted)">Session data is isolated per instance. Auth tokens (auth.json above) are copied from global on first start.</td></tr>
+        </tfoot>
     </table>
 </div>
 

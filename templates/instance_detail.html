@@ -55,8 +55,8 @@
                 class="btn btn-primary"><span class="htmx-indicator spinner"></span>Start</button>
         {{end}}
         <button hx-delete="/instances/{{.Instance.ID}}"
-                hx-confirm="确定要删除此实例吗？这将永久销毁容器及其数据。"
-                class="btn btn-danger">删除实例</button>
+                hx-confirm="Are you sure you want to delete this instance? This will permanently destroy the container and its data."
+                class="btn btn-danger">Delete Instance</button>
     </div>
 </div>
 
@@ -91,6 +91,6 @@ connectLogs();
 
 <div class="card">
     <h2>Configuration</h2>
-    <p class="hint">环境变量和配置文件从 <a href="/settings">全局设置</a> 统一注入到所有实例。</p>
+    <p class="hint">Environment variables and config files are injected from <a href="/settings">Global Settings</a> into all instances.</p>
 </div>
 {{end}}

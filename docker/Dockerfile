@@ -48,7 +48,7 @@ RUN bun install -g opencode-ai@latest
 RUN bun install -g oh-my-opencode@latest
 
 # Create workspace directory
-RUN mkdir -p /workspace /root/.opencode /root/.config/opencode /root/.local/share/opencode
+RUN mkdir -p /workspace /root/.opencode /root/.config/opencode /root/.local/share/opencode /root/.agents/skills
 
 # Copy entrypoint script
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

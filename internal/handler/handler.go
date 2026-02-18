@@ -1,16 +1,13 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -110,7 +107,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /settings/dir-files", h.handleListDirFiles)
 	mux.HandleFunc("POST /settings/dir-file", h.handleSaveDirFile)
 	mux.HandleFunc("DELETE /settings/dir-file", h.handleDeleteDirFile)
-	mux.HandleFunc("POST /settings/install-skill", h.handleInstallSkill)
 
 	// Instance CRUD (HTMX endpoints)
 	mux.HandleFunc("POST /instances", h.handleCreateInstance)
@@ -266,11 +262,10 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Unregister proxy
 	h.proxy.Unregister(id)
 	h.portPool.Release(inst.Port)
+	h.config.RemoveInstanceData(id)
 
-	// Delete from store
 	if err := h.store.Delete(id); err != nil {
 		http.Error(w, "Failed to delete instance", http.StatusInternalServerError)
 		return
@@ -434,17 +429,22 @@ func (h *Handler) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldStatus := inst.Status
 	if inst.ContainerID != "" {
 		if status, err := h.docker.ContainerStatus(r.Context(), inst.ContainerID); err == nil {
-			if status != inst.Status {
-				inst.Status = status
+			inst.Status = status
+			if status != oldStatus {
 				_ = h.store.Update(inst)
 			}
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": inst.Status})
+	if inst.Status == oldStatus {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	h.renderPartial(w, "instance_row", inst)
 }
 
 const instanceCookieName = "_cc_inst"
@@ -533,10 +533,10 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 		name string
 		hint string
 	}{
-		{"commands", "自定义命令（.md 文件），容器内路径 ~/.config/opencode/commands/"},
-		{"agents", "自定义 Agent（.md 文件），容器内路径 ~/.config/opencode/agents/"},
-		{"skills", "Agent Skills（<name>/SKILL.md），容器内路径 ~/.config/opencode/skills/"},
-		{"plugins", "本地 Plugin（.js/.ts 文件），容器内路径 ~/.config/opencode/plugins/"},
+		{"commands", "Custom commands (.md files), mounted at ~/.config/opencode/commands/"},
+		{"agents", "Custom agents (.md files), mounted at ~/.config/opencode/agents/"},
+		{"skills", "Agent skills (<name>/SKILL.md), mounted at ~/.config/opencode/skills/"},
+		{"plugins", "Local plugins (.js/.ts files), mounted at ~/.config/opencode/plugins/"},
 	}
 
 	var dirs []dirSection
@@ -812,58 +812,6 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-done
-}
-
-// skillSourcePattern validates skill source format: owner/repo
-var skillSourcePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
-
-func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
-		return
-	}
-
-	source := strings.TrimSpace(r.FormValue("source"))
-	skills := strings.TrimSpace(r.FormValue("skills"))
-
-	if source == "" {
-		respondError(w, "Source is required (e.g. vercel-labs/agent-skills)")
-		return
-	}
-	if !skillSourcePattern.MatchString(source) {
-		respondError(w, "Invalid source format. Use owner/repo (e.g. vercel-labs/agent-skills)")
-		return
-	}
-
-	args := []string{"skills", "add", source, "-g", "-y", "--agent", "opencode"}
-	if skills != "" {
-		args = append(args, "--skill", skills)
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "npx", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	log.Printf("Installing skill: npx %s", strings.Join(args, " "))
-	if err := cmd.Run(); err != nil {
-		log.Printf("Skill install failed: %v, stderr: %s", err, stderr.String())
-		respondError(w, fmt.Sprintf("Install failed: %v", err))
-		return
-	}
-
-	if err := h.config.SyncAgentSkills(); err != nil {
-		log.Printf("Skill sync failed: %v", err)
-		respondError(w, "Installed but sync failed: "+err.Error())
-		return
-	}
-
-	log.Printf("Skill installed successfully from %s", source)
-	w.Header().Set("HX-Redirect", "/settings")
-	w.WriteHeader(http.StatusOK)
 }
 
 func respondError(w http.ResponseWriter, msg string) {
