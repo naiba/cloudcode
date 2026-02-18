@@ -1,0 +1,73 @@
+{{define "content"}}
+<div class="header-row">
+    <h1>{{.Instance.Name}}</h1>
+    <a href="/" class="btn btn-secondary">Back to Dashboard</a>
+</div>
+
+<div class="card">
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">ID</span>
+            <span class="detail-value mono">{{.Instance.ID}}</span>
+        </div>
+        <div class="detail-item">
+            <span class="detail-label">Status</span>
+            <span class="badge {{statusBadge .Instance.Status}}">{{.Instance.Status}}</span>
+        </div>
+        <div class="detail-item">
+            <span class="detail-label">Port</span>
+            <span class="detail-value">{{.Instance.Port}}</span>
+        </div>
+        <div class="detail-item">
+            <span class="detail-label">Container ID</span>
+            <span class="detail-value mono">{{if .Instance.ContainerID}}{{.Instance.ContainerID}}{{else}}-{{end}}</span>
+        </div>
+        <div class="detail-item">
+            <span class="detail-label">Created</span>
+            <span class="detail-value">{{.Instance.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
+        </div>
+        <div class="detail-item">
+            <span class="detail-label">Updated</span>
+            <span class="detail-value">{{.Instance.UpdatedAt.Format "2006-01-02 15:04:05"}}</span>
+        </div>
+    </div>
+
+    <div class="detail-actions" id="instance-actions">
+        {{if eq .Instance.Status "running"}}
+        <a href="/instance/{{.Instance.ID}}/" target="_blank" class="btn btn-success">Open Web UI</a>
+        <button hx-post="/instances/{{.Instance.ID}}/stop"
+                hx-target="#instance-actions" hx-swap="outerHTML"
+                class="btn btn-warning">Stop</button>
+        <button hx-post="/instances/{{.Instance.ID}}/restart"
+                hx-target="#instance-actions" hx-swap="outerHTML"
+                class="btn btn-secondary">Restart</button>
+        {{else}}
+        <button hx-post="/instances/{{.Instance.ID}}/start"
+                hx-target="#instance-actions" hx-swap="outerHTML"
+                class="btn btn-primary">Start</button>
+        {{end}}
+        <button hx-delete="/instances/{{.Instance.ID}}"
+                hx-confirm="Are you sure? This will destroy the container."
+                class="btn btn-danger">Delete Instance</button>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Container Logs</h2>
+    <div class="log-controls">
+        <button hx-get="/instances/{{.Instance.ID}}/logs"
+                hx-target="#log-output"
+                hx-swap="innerHTML"
+                class="btn btn-sm btn-secondary">Refresh Logs</button>
+    </div>
+    <pre class="log-output" id="log-output"
+         hx-get="/instances/{{.Instance.ID}}/logs"
+         hx-trigger="load"
+         hx-swap="innerHTML">Loading logs...</pre>
+</div>
+
+<div class="card">
+    <h2>Configuration</h2>
+    <p class="hint">环境变量和配置文件从 <a href="/settings">全局设置</a> 统一注入到所有实例。</p>
+</div>
+{{end}}

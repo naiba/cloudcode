@@ -1,0 +1,28 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="stylesheet" href="/static/css/style.css?v={{version}}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="/" class="logo">CloudCode</a>
+            <span class="subtitle">OpenCode Instance Manager</span>
+            <nav class="nav-links">
+                <a href="/">Instances</a>
+                <a href="/settings">Settings</a>
+            </nav>
+        </div>
+    </nav>
+    <main class="container">
+        {{template "content" .}}
+    </main>
+    <script src="/static/js/app.js?v={{version}}"></script>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,40 @@
+{{define "content"}}
+<div class="header-row">
+    <h1>Instances</h1>
+    <a href="/instances/new" class="btn btn-primary">+ New Instance</a>
+</div>
+
+{{if not .Instances}}
+<div class="empty-state">
+    <p>No instances yet. Create your first OpenCode instance to get started.</p>
+    <a href="/instances/new" class="btn btn-primary">Create Instance</a>
+</div>
+{{else}}
+<div class="table-wrap">
+    <table class="table" id="instances-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Port</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Instances}}
+            {{template "instance_row" .}}
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+<dialog id="log-modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2>Container Logs</h2>
+        <button onclick="this.closest('dialog').close()" class="btn btn-sm btn-secondary">Close</button>
+    </div>
+    <pre class="log-output" id="log-modal-content">Loading...</pre>
+</dialog>
+{{end}}

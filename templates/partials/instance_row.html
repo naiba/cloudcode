@@ -1,0 +1,40 @@
+{{define "instance_row"}}
+<tr id="instance-{{.ID}}" hx-get="/instances/{{.ID}}/status" hx-trigger="every 10s" hx-swap="none">
+    <td>
+        <a href="/instances/{{.ID}}" class="instance-name">{{.Name}}</a>
+    </td>
+    <td>
+        <span class="badge {{statusBadge .Status}}">{{.Status}}</span>
+    </td>
+    <td>{{.Port}}</td>
+    <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+    <td class="actions">
+        {{if eq .Status "running"}}
+        <a href="/instance/{{.ID}}/" target="_blank" class="btn btn-sm btn-success" title="Open Web UI">Open</a>
+        <button hx-post="/instances/{{.ID}}/stop"
+                hx-target="#instance-{{.ID}}"
+                hx-swap="outerHTML"
+                class="btn btn-sm btn-warning">Stop</button>
+        <button hx-post="/instances/{{.ID}}/restart"
+                hx-target="#instance-{{.ID}}"
+                hx-swap="outerHTML"
+                class="btn btn-sm btn-secondary">Restart</button>
+        {{else if or (eq .Status "stopped") (eq .Status "exited") (eq .Status "created")}}
+        <button hx-post="/instances/{{.ID}}/start"
+                hx-target="#instance-{{.ID}}"
+                hx-swap="outerHTML"
+                class="btn btn-sm btn-primary">Start</button>
+        {{end}}
+        <button hx-get="/instances/{{.ID}}/logs"
+                hx-target="#log-modal-content"
+                hx-swap="innerHTML"
+                onclick="document.getElementById('log-modal').showModal()"
+                class="btn btn-sm btn-secondary">Logs</button>
+        <button hx-delete="/instances/{{.ID}}"
+                hx-target="#instance-{{.ID}}"
+                hx-swap="outerHTML"
+                hx-confirm="Are you sure you want to delete instance '{{.Name}}'? This will destroy the container."
+                class="btn btn-sm btn-danger">Delete</button>
+    </td>
+</tr>
+{{end}}

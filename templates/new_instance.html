@@ -1,0 +1,24 @@
+{{define "content"}}
+<div class="header-row">
+    <h1>Create New Instance</h1>
+    <a href="/" class="btn btn-secondary">Back</a>
+</div>
+
+<form hx-post="/instances" hx-swap="none" class="form card">
+    <div class="form-section">
+        <h2>Basic Info</h2>
+        <div class="form-group">
+            <label for="name">Instance Name *</label>
+            <input type="text" id="name" name="name" required
+                   placeholder="e.g. my-project" pattern="[a-zA-Z0-9_-]+"
+                   title="Only letters, numbers, hyphens, and underscores">
+        </div>
+        <p class="hint">API keys、GitHub Token 等配置从 <a href="/settings">全局设置</a> 统一注入，无需单独配置。</p>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Create & Start Instance</button>
+        <a href="/" class="btn btn-secondary">Cancel</a>
+    </div>
+</form>
+{{end}}

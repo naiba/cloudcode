@@ -1,0 +1,161 @@
+{{define "content"}}
+<div class="header-row">
+    <h1>Global Settings</h1>
+</div>
+
+<div class="card">
+    <h2>Environment Variables</h2>
+    <p class="hint">这些环境变量会自动注入到所有实例中（如 GH_TOKEN, ANTHROPIC_API_KEY 等）。</p>
+    <form hx-post="/settings/env" hx-swap="none" id="env-form">
+        <div id="env-rows">
+            {{range $key, $val := .EnvVars}}
+            <div class="env-row">
+                <input type="text" name="env_key" value="{{$key}}" placeholder="KEY" class="env-input env-key">
+                <input type="password" name="env_value" value="{{$val}}" placeholder="Value" class="env-input env-val">
+                <button type="button" class="btn btn-sm btn-danger env-remove" onclick="this.parentElement.remove()">×</button>
+            </div>
+            {{end}}
+        </div>
+        <div class="env-actions">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="addEnvRow()">+ Add Variable</button>
+            <button type="submit" class="btn btn-primary">Save Environment Variables</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Config Files</h2>
+    <p class="hint">这些配置文件会挂载到所有实例的对应目录中。配置目录：<code>{{.ConfigDir}}</code></p>
+
+    <div class="config-tabs">
+        {{range $i, $f := .Files}}
+        <button class="tab-btn {{if eq $i 0}}active{{end}}" onclick="switchTab(this, '{{$f.RelPath}}')">{{$f.Name}}</button>
+        {{end}}
+    </div>
+
+    {{range $i, $f := .Files}}
+    <div class="config-panel {{if ne $i 0}}hidden{{end}}" data-path="{{$f.RelPath}}">
+        <p class="hint">{{$f.Hint}}</p>
+        <form hx-post="/settings/file" hx-swap="none">
+            <input type="hidden" name="path" value="{{$f.RelPath}}">
+            <textarea name="content" class="config-editor" rows="20" spellcheck="false">{{$f.Content}}</textarea>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+        </form>
+    </div>
+    {{end}}
+</div>
+
+{{range .Dirs}}
+<div class="card">
+    <div class="header-row" style="margin-bottom:12px">
+        <h2>{{.Name}}/</h2>
+        <button class="btn btn-sm btn-secondary" onclick="openNewFileDialog('{{.Name}}')">+ New File</button>
+    </div>
+    <p class="hint">{{.Hint}}</p>
+    {{if .Files}}
+    <div class="dir-file-list">
+        {{range .Files}}
+        <div class="dir-file-item">
+            <span class="dir-file-name mono">{{.Name}}</span>
+            <div class="actions">
+                <button class="btn btn-sm" onclick="openEditFileDialog('{{$.ConfigDir}}', '{{.RelPath}}', '{{.Name}}')">Edit</button>
+                <button class="btn btn-sm btn-danger" hx-delete="/settings/dir-file?path={{.RelPath}}" hx-confirm="Delete {{.Name}}?">Delete</button>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <p style="color:var(--text-muted);font-size:0.85rem">No files yet.</p>
+    {{end}}
+</div>
+{{end}}
+
+<div class="card">
+    <h2>Directory Mapping</h2>
+    <p class="hint">全局配置目录与容器内路径的映射关系：</p>
+    <table class="table">
+        <thead>
+            <tr><th>Host Path</th><th>Container Path</th></tr>
+        </thead>
+        <tbody>
+            <tr><td class="mono">{{.ConfigDir}}/opencode/</td><td class="mono">/root/.config/opencode/</td></tr>
+            <tr><td class="mono">{{.ConfigDir}}/opencode-data/</td><td class="mono">/root/.local/share/opencode/</td></tr>
+            <tr><td class="mono">{{.ConfigDir}}/dot-opencode/</td><td class="mono">/root/.opencode/</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<dialog id="file-dialog">
+    <h3 id="file-dialog-title">New File</h3>
+    <form hx-post="/settings/dir-file" hx-swap="none" style="margin-top:16px">
+        <input type="hidden" name="dir" id="file-dialog-dir">
+        <div class="form-group" id="filename-group">
+            <label>Filename</label>
+            <input type="text" name="filename" id="file-dialog-filename" placeholder="example.md">
+        </div>
+        <div class="form-group">
+            <label>Content</label>
+            <textarea name="content" id="file-dialog-content" class="config-editor" rows="15" spellcheck="false"></textarea>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-dialog').close()">Cancel</button>
+        </div>
+    </form>
+</dialog>
+
+<script>
+function addEnvRow() {
+    var row = document.createElement('div');
+    row.className = 'env-row';
+    row.innerHTML = '<input type="text" name="env_key" placeholder="KEY" class="env-input env-key">' +
+        '<input type="password" name="env_value" placeholder="Value" class="env-input env-val">' +
+        '<button type="button" class="btn btn-sm btn-danger env-remove" onclick="this.parentElement.remove()">×</button>';
+    document.getElementById('env-rows').appendChild(row);
+}
+
+function switchTab(btn, path) {
+    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    document.querySelectorAll('.config-panel').forEach(function(p) { p.classList.add('hidden'); });
+    document.querySelector('.config-panel[data-path="' + path + '"]').classList.remove('hidden');
+}
+
+function openNewFileDialog(dir) {
+    document.getElementById('file-dialog-title').textContent = 'New File in ' + dir + '/';
+    document.getElementById('file-dialog-dir').value = dir;
+    document.getElementById('file-dialog-filename').value = '';
+    document.getElementById('file-dialog-filename').readOnly = false;
+    document.getElementById('filename-group').style.display = '';
+    document.getElementById('file-dialog-content').value = dir === 'skills'
+        ? '---\nname: \ndescription: \n---\n'
+        : dir === 'agents'
+        ? '---\ndescription: \nmode: subagent\n---\n'
+        : dir === 'commands'
+        ? '---\ndescription: \n---\n'
+        : dir === 'plugins'
+        ? 'export const MyPlugin = async ({ project, client, $, directory, worktree }) => {\n  return {\n  }\n}\n'
+        : '';
+    document.getElementById('file-dialog').showModal();
+}
+
+function openEditFileDialog(configDir, relPath, name) {
+    document.getElementById('file-dialog-title').textContent = 'Edit ' + name;
+    var parts = relPath.replace('opencode/', '').split('/');
+    var dir = parts[0];
+    var filename = parts.slice(1).join('/');
+    document.getElementById('file-dialog-dir').value = dir;
+    document.getElementById('file-dialog-filename').value = filename;
+    document.getElementById('file-dialog-filename').readOnly = true;
+    document.getElementById('filename-group').style.display = '';
+    document.getElementById('file-dialog-content').value = 'Loading...';
+    document.getElementById('file-dialog').showModal();
+
+    fetch('/settings/file?path=' + encodeURIComponent(relPath))
+        .then(function(r) { return r.text(); })
+        .then(function(text) { document.getElementById('file-dialog-content').value = text; });
+}
+</script>
+{{end}}
