@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
@@ -132,8 +133,9 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 	resp, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: containerName,
 		Config: &container.Config{
-			Image: m.image,
-			Env:   env,
+			Image:      m.image,
+			WorkingDir: "/root",
+			Env:        env,
 			Labels: map[string]string{
 				labelManaged: "true",
 				labelInstID:  inst.ID,
@@ -199,7 +201,7 @@ func (m *Manager) ContainerLogsStream(ctx context.Context, containerID string, t
 		tail = "100"
 	}
 
-	reader, err := m.cli.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
+	raw, err := m.cli.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       tail,
@@ -209,7 +211,14 @@ func (m *Manager) ContainerLogsStream(ctx context.Context, containerID string, t
 	if err != nil {
 		return nil, fmt.Errorf("stream container logs: %w", err)
 	}
-	return reader, nil
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := stdcopy.StdCopy(pw, pw, raw)
+		raw.Close()
+		pw.CloseWithError(err)
+	}()
+	return pr, nil
 }
 
 func (m *Manager) ContainerStatus(ctx context.Context, containerID string) (string, error) {

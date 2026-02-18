@@ -64,7 +64,7 @@ func (s *Store) migrate() error {
 			status       TEXT NOT NULL DEFAULT 'created',
 			error_msg    TEXT NOT NULL DEFAULT '',
 			port         INTEGER NOT NULL DEFAULT 0,
-			work_dir     TEXT NOT NULL DEFAULT '/workspace',
+			work_dir     TEXT NOT NULL DEFAULT '/root',
 			env_vars     TEXT NOT NULL DEFAULT '{}',
 			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
