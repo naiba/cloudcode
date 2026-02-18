@@ -100,14 +100,27 @@ _ = h.store.Update(inst)
 - 容器命名规则：`cloudcode-{instanceID}`
 - 网络：自建 bridge 网络 `cloudcode-net`
 - 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.local/share/opencode/`、`/root/.opencode/`
+- 容器未开启 TTY 模式（`Tty: false`），因此 `ContainerLogs` 返回的是 Docker multiplexed stream（每条日志前有 8 字节二进制 header 标识 stdout/stderr）。读取日志时**必须**使用 `stdcopy.StdCopy`（`github.com/moby/moby/api/pkg/stdcopy`）解码，否则输出会有乱码前缀
+- 镜像不存在时自动 `docker pull`，永远不在应用内本地构建镜像
 
 ### 前端
 
 - **html/template** 服务端渲染，不用前端框架
 - **HTMX** 处理交互（`hx-post`、`hx-delete`、`hx-swap`、`HX-Redirect`、`HX-Trigger`）
+- **WebSocket** 用于实时日志流和交互式终端，不用 HTTP 轮询
 - CSS：自定义变量主题（`var(--bg)`、`var(--primary)` 等），暗色系
 - JS：仅原生 JS，不引入构建工具或 npm 依赖
+- 终端页面使用 CDN 加载 xterm.js（`@xterm/xterm`、`@xterm/addon-fit`、`@xterm/addon-web-links`）
 - 模板结构：`templates/layouts/base.html`（布局）、`templates/*.html`（页面）、`templates/partials/`（片段）
+
+### WebSocket 规范
+
+- 使用 `github.com/gorilla/websocket` 库
+- WebSocket handler 中使用 `r.Context()` 管理生命周期（upgrade 后 context 跟底层连接绑定，用户关闭页面时自动取消）
+- 服务端主动关闭时必须先发送 close frame（`websocket.CloseMessage`），避免客户端触发 `onerror`
+- 日志流：`/instances/{id}/logs/ws` — Docker logs follow 模式，经 `stdcopy.StdCopy` 解码后推送
+- 终端：`/instances/{id}/terminal/ws` — Docker exec TTY，双向桥接浏览器和容器 shell
+- 终端 resize 通过 JSON 消息 `{"type":"resize","cols":N,"rows":N}` 传递，服务端调用 `ExecResize`
 
 ### CSS 规范
 
@@ -126,6 +139,31 @@ _ = h.store.Update(inst)
 | `{dataDir}/config/dot-opencode/` | `/root/.opencode/` | package.json |
 
 子目录：`commands/`、`agents/`、`skills/`、`plugins/` — 通过 Settings 页面在线管理。
+
+## 反向代理架构
+
+OpenCode Web UI 通过 Referer-based routing 方案代理，**不改写**响应内容（无 HTML/CSS/JS 路径重写）。
+
+### 路由策略
+
+1. **入口代理** `/instance/{id}/` — strip prefix 后转发到容器（`ServeHTTP`）
+2. **Catch-all fallback** `"/"` — 注册在所有平台路由之后，匹配所有未命中的路径
+   - 从 `Referer` 头提取 `/instance/{id}/` 中的 instance ID
+   - 原始路径直接转发到容器（`ServeHTTPDirect`），不做任何路径修改
+   - `httputil.ReverseProxy` 自动处理 WebSocket 升级（`Upgrade: websocket`）、SSE 等
+3. **无 Referer** 的请求返回 404（不属于任何实例）
+
+### 工作原理
+
+浏览器访问 `/instance/{id}/` → 容器返回 SPA HTML（资源路径为 `/assets/xxx.js`）  
+→ 浏览器请求 `/assets/xxx.js`，带 `Referer: http://host/instance/{id}/`  
+→ catch-all handler 从 Referer 提取 ID → 直接代理到容器 → 容器正常响应
+
+### 注意事项
+
+- `httputil.ReverseProxy` 原生支持 WebSocket：当请求包含 `Upgrade` 头时自动进行协议升级并双向桥接
+- OpenCode SDK 的 API 请求（`/global/`、`/path`、`/project` 等）和静态资源（`/assets/`）都通过同一个 catch-all 机制处理
+- 容器内 OpenCode 使用 `window.location.origin` 拼接 API URL，指向平台根路径，因此都会被 catch-all 捕获
 
 ## 关键约束
 
