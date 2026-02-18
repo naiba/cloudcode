@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -70,9 +71,33 @@ func (m *Manager) ensureNetwork(ctx context.Context) error {
 	return err
 }
 
+func (m *Manager) ensureImage(ctx context.Context) error {
+	exists, err := m.ImageExists(ctx)
+	if err != nil {
+		return fmt.Errorf("check image: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	log.Printf("镜像 %s 不存在，正在拉取 ...", m.image)
+	reader, err := m.cli.ImagePull(ctx, m.image, client.ImagePullOptions{})
+	if err != nil {
+		return fmt.Errorf("pull image %s: %w", m.image, err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
+	log.Printf("镜像 %s 拉取完成", m.image)
+	return nil
+}
+
 func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := m.ensureImage(ctx); err != nil {
+		return "", fmt.Errorf("ensure image: %w", err)
+	}
 
 	containerName := containerPrefix + inst.ID
 
