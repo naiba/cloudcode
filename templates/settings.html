@@ -73,6 +73,26 @@
 {{end}}
 
 <div class="card">
+    <h2>Installed Skills (skills.sh)</h2>
+    <p class="hint">Skills installed via <code>bunx skills add</code> in containers. Shared across all instances. Mounted at <code>/root/.agents/skills/</code></p>
+    {{if .AgentsSkills}}
+    <div class="dir-file-list">
+        {{range .AgentsSkills}}
+        <div class="dir-file-item">
+            <span class="dir-file-name mono">{{.SkillName}}</span>
+            <div class="actions">
+                <button class="btn btn-sm" onclick="openAgentsSkillDialog('{{.RelPath}}', '{{.SkillName}}')">View</button>
+                <button class="btn btn-sm btn-danger" hx-delete="/settings/agents-skill?name={{.SkillName}}" hx-confirm="Delete skill '{{.SkillName}}'? This will remove the entire skill directory.">Delete</button>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <p style="color:var(--text-muted);font-size:0.85rem">No skills installed yet. Run <code>bunx skills add owner/repo -g -y</code> in any container terminal to install.</p>
+    {{end}}
+</div>
+
+<div class="card">
     <h2>Directory Mapping</h2>
     <p class="hint">Host-to-container directory mapping. Install <a href="https://skills.sh" target="_blank" style="color:var(--primary)">skills.sh</a> skills inside any container via <code>bunx skills add owner/repo -g -y</code> — shared across all instances.</p>
     <table class="table">
@@ -104,8 +124,8 @@
             <textarea name="content" id="file-dialog-content" class="config-editor" rows="15" spellcheck="false"></textarea>
         </div>
         <div class="form-actions">
-            <button type="submit" class="btn btn-primary">Save</button>
-            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-dialog').close()">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="file-dialog-save">Save</button>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-dialog').close()">Close</button>
         </div>
     </form>
 </dialog>
@@ -133,6 +153,8 @@ function openNewFileDialog(dir) {
     document.getElementById('file-dialog-filename').value = '';
     document.getElementById('file-dialog-filename').readOnly = false;
     document.getElementById('filename-group').style.display = '';
+    document.getElementById('file-dialog-content').readOnly = false;
+    document.getElementById('file-dialog-save').style.display = '';
     document.getElementById('file-dialog-content').value = dir === 'skills'
         ? '---\nname: \ndescription: \n---\n'
         : dir === 'agents'
@@ -145,6 +167,21 @@ function openNewFileDialog(dir) {
     document.getElementById('file-dialog').showModal();
 }
 
+function openAgentsSkillDialog(relPath, skillName) {
+    document.getElementById('file-dialog-title').textContent = 'Skill: ' + skillName;
+    document.getElementById('file-dialog-dir').value = '';
+    document.getElementById('file-dialog-filename').value = '';
+    document.getElementById('filename-group').style.display = 'none';
+    document.getElementById('file-dialog-content').value = 'Loading...';
+    document.getElementById('file-dialog-content').readOnly = true;
+    document.getElementById('file-dialog-save').style.display = 'none';
+    document.getElementById('file-dialog').showModal();
+
+    fetch('/settings/file?path=' + encodeURIComponent(relPath))
+        .then(function(r) { return r.text(); })
+        .then(function(text) { document.getElementById('file-dialog-content').value = text; });
+}
+
 function openEditFileDialog(configDir, relPath, name) {
     document.getElementById('file-dialog-title').textContent = 'Edit ' + name;
     var parts = relPath.replace('opencode/', '').split('/');
@@ -154,6 +191,8 @@ function openEditFileDialog(configDir, relPath, name) {
     document.getElementById('file-dialog-filename').value = filename;
     document.getElementById('file-dialog-filename').readOnly = true;
     document.getElementById('filename-group').style.display = '';
+    document.getElementById('file-dialog-content').readOnly = false;
+    document.getElementById('file-dialog-save').style.display = '';
     document.getElementById('file-dialog-content').value = 'Loading...';
     document.getElementById('file-dialog').showModal();
 

@@ -107,6 +107,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /settings/dir-files", h.handleListDirFiles)
 	mux.HandleFunc("POST /settings/dir-file", h.handleSaveDirFile)
 	mux.HandleFunc("DELETE /settings/dir-file", h.handleDeleteDirFile)
+	mux.HandleFunc("DELETE /settings/agents-skill", h.handleDeleteAgentsSkill)
 
 	// Instance CRUD (HTMX endpoints)
 	mux.HandleFunc("POST /instances", h.handleCreateInstance)
@@ -549,12 +550,15 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	agentsSkills, _ := h.config.ListAgentsSkills()
+
 	data := map[string]interface{}{
-		"Title":     "CloudCode - Settings",
-		"EnvVars":   envVars,
-		"Files":     editableFiles,
-		"Dirs":      dirs,
-		"ConfigDir": h.config.RootDir(),
+		"Title":        "CloudCode - Settings",
+		"EnvVars":      envVars,
+		"Files":        editableFiles,
+		"Dirs":         dirs,
+		"AgentsSkills": agentsSkills,
+		"ConfigDir":    h.config.RootDir(),
 	}
 	h.render(w, "settings", data)
 }
@@ -676,6 +680,22 @@ func (h *Handler) handleDeleteDirFile(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.config.DeleteFile(relPath); err != nil {
 		respondError(w, "Failed to delete file: "+err.Error())
+		return
+	}
+
+	w.Header().Set("HX-Redirect", "/settings")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) handleDeleteAgentsSkill(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.config.DeleteAgentsSkill(name); err != nil {
+		respondError(w, "Failed to delete skill: "+err.Error())
 		return
 	}
 

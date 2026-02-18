@@ -239,6 +239,57 @@ func (m *Manager) ListDirFiles(dirName string) ([]DirFileInfo, error) {
 	return files, nil
 }
 
+type AgentsSkillInfo struct {
+	SkillName string
+	RelPath   string
+}
+
+func (m *Manager) ListAgentsSkills() ([]AgentsSkillInfo, error) {
+	dirPath := filepath.Join(m.rootDir, DirAgentsSkills)
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var skills []AgentsSkillInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		skillFile := filepath.Join(e.Name(), "SKILL.md")
+		absSkill := filepath.Join(dirPath, skillFile)
+		if _, err := os.Stat(absSkill); err == nil {
+			skills = append(skills, AgentsSkillInfo{
+				SkillName: e.Name(),
+				RelPath:   filepath.Join(DirAgentsSkills, skillFile),
+			})
+		}
+	}
+	return skills, nil
+}
+
+// ReadAgentsSkillFile reads a file from the agents-skills/ directory.
+func (m *Manager) ReadAgentsSkillFile(relPath string) (string, error) {
+	p := filepath.Join(m.rootDir, relPath)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// DeleteAgentsSkill removes an entire skill directory from agents-skills/.
+func (m *Manager) DeleteAgentsSkill(skillName string) error {
+	p := filepath.Join(m.rootDir, DirAgentsSkills, skillName)
+	return os.RemoveAll(p)
+}
+
 func (m *Manager) DeleteFile(relPath string) error {
 	p := filepath.Join(m.rootDir, relPath)
 	if err := os.Remove(p); err != nil {
