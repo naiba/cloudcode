@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -33,11 +34,9 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 
-	// Custom director to strip the instance prefix path
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		// Strip /instance/{id}/ prefix before forwarding
 		prefix := fmt.Sprintf("/instance/%s", instanceID)
 		if strings.HasPrefix(req.URL.Path, prefix) {
 			req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
@@ -48,9 +47,11 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		req.Host = target.Host
 	}
 
-	// Handle WebSocket upgrade
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		return nil
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		tmpl := template.Must(template.New("waiting").Parse(waitingPageHTML))
+		_ = tmpl.Execute(w, map[string]string{"InstanceID": instanceID})
 	}
 
 	rp.mu.Lock()
@@ -90,3 +91,28 @@ func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 	_, ok := rp.proxies[instanceID]
 	return ok
 }
+
+const waitingPageHTML = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Starting...</title>
+<meta http-equiv="refresh" content="3">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e4e6ed;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.wrap{text-align:center}
+.spinner{width:40px;height:40px;border:3px solid #2d3045;border-top-color:#6366f1;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 24px}
+@keyframes spin{to{transform:rotate(360deg)}}
+h2{font-size:1.25rem;margin-bottom:8px}
+p{color:#8b8fa3;font-size:.875rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="spinner"></div>
+<h2>Instance Starting</h2>
+<p>OpenCode is initializing, this page will refresh automatically...</p>
+</div>
+</body>
+</html>`
