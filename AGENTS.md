@@ -13,7 +13,8 @@ CloudCode 是一个 OpenCode 实例管理平台。Go 后端 + Docker 容器编�
 ```
 main.go                     入口，加载模板，启动 HTTP server
 internal/
-  config/config.go          配置文件管理（读写宿主机配置，生成容器 bind mount）
+  config/config.go          配置文件管理（读写宿主机配置，生成容器 bind mount，按实例隔离 session）
+  config/plugins/            embed 的内置 plugin（如 _cloudcode-telegram.ts），启动时写入 plugins/
   docker/manager.go         Docker 容器生命周期（创建/启动/停止/删除）
   handler/handler.go        所有 HTTP handler（页面渲染 + HTMX API）
   proxy/proxy.go            动态反向代理到各实例的 opencode web UI
@@ -99,16 +100,19 @@ _ = h.store.Update(inst)
 - 使用 `github.com/moby/moby/client` 官方 SDK
 - 容器命名规则：`cloudcode-{instanceID}`
 - 网络：自建 bridge 网络 `cloudcode-net`
-- 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.local/share/opencode/`、`/root/.opencode/`
+- 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.opencode/`、`/root/.agents/skills/`
+- Session 数据按实例隔离：`{dataDir}/config/instances/{id}/opencode-data/` → `/root/.local/share/opencode/`
+- `auth.json` 全局共享，首次创建实例时从 `{dataDir}/config/opencode-data/auth.json` 复制到实例目录
 - 容器未开启 TTY 模式（`Tty: false`），因此 `ContainerLogs` 返回的是 Docker multiplexed stream（每条日志前有 8 字节二进制 header 标识 stdout/stderr）。读取日志时**必须**使用 `stdcopy.StdCopy`（`github.com/moby/moby/api/pkg/stdcopy`）解码，否则输出会有乱码前缀
 - 镜像不存在时自动 `docker pull`，永远不在应用内本地构建镜像
+- `ContainerMountsForInstance(instanceID)` 按实例生成 mount 列表，session 数据隔离
 
 ### 前端
 
 - **html/template** 服务端渲染，不用前端框架
 - **HTMX** 处理交互（`hx-post`、`hx-delete`、`hx-swap`、`HX-Redirect`、`HX-Trigger`）
 - **WebSocket** 用于实时日志流和交互式终端，不用 HTTP 轮询
-- CSS：自定义变量主题（`var(--bg)`、`var(--primary)` 等），暗色系
+- CSS：自定义变量主题（`var(--bg)`、`var(--primary)` 等），暗色/亮色双主题（`[data-theme="light"]`）
 - JS：仅原生 JS，不引入构建工具或 npm 依赖
 - 终端页面使用 CDN 加载 xterm.js（`@xterm/xterm`、`@xterm/addon-fit`、`@xterm/addon-web-links`）
 - 模板结构：`templates/layouts/base.html`（布局）、`templates/*.html`（页面）、`templates/partials/`（片段）
@@ -132,13 +136,19 @@ _ = h.store.Update(inst)
 
 平台管理的 OpenCode 配置文件和目录：
 
-| 宿主机路径 | 容器内路径 | 内容 |
-|---|---|---|
-| `{dataDir}/config/opencode/` | `/root/.config/opencode/` | opencode.json, AGENTS.md, package.json 等 |
-| `{dataDir}/config/opencode-data/` | `/root/.local/share/opencode/` | auth.json |
-| `{dataDir}/config/dot-opencode/` | `/root/.opencode/` | package.json |
+| 宿主机路径 | 容器内路径 | 范围 | 内容 |
+|---|---|---|---|
+| `{dataDir}/config/opencode/` | `/root/.config/opencode/` | 全局 | opencode.jsonc, AGENTS.md, package.json, commands/, agents/, skills/, plugins/ |
+| `{dataDir}/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | 按实例 | session 数据、数据库 |
+| `{dataDir}/config/opencode-data/` | — | 全局 | auth.json（首次启动时复制到各实例） |
+| `{dataDir}/config/dot-opencode/` | `/root/.opencode/` | 全局 | package.json |
+| `{dataDir}/config/agents-skills/` | `/root/.agents/skills/` | 全局 | skills.sh 安装的技能 |
 
 子目录：`commands/`、`agents/`、`skills/`、`plugins/` — 通过 Settings 页面在线管理。
+
+内置 plugin `_cloudcode-telegram.ts` 通过 `//go:embed` 嵌入二进制，每次启动强制写入 `plugins/` 目录。
+- 监听 `session.idle` 和 `session.error` 事件，通过 Telegram Bot API 发送通知
+- 读取 `CC_TELEGRAM_BOT_TOKEN` 和 `CC_TELEGRAM_CHAT_ID` 环境变量，未配置则静默跳过
 
 ## 反向代理架构
 

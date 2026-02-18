@@ -7,10 +7,13 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 ## Features
 
 - **Multi-instance management** — Create, start, stop, restart, and delete OpenCode instances
-- **Shared global config** — Manage `opencode.json`, `AGENTS.md`, auth tokens, custom commands, agents, skills, and plugins from a unified Settings UI
+- **Session isolation** — Each instance has its own session data; auth tokens are shared globally
+- **Shared global config** — Manage `opencode.jsonc`, `AGENTS.md`, auth tokens, custom commands, agents, skills, and plugins from a unified Settings UI
+- **skills.sh integration** — Install [skills.sh](https://skills.sh) skills inside any container via `bunx skills add`, shared across all instances
+- **Telegram notifications** — Built-in plugin sends Telegram messages on task completion/error (configure `CC_TELEGRAM_BOT_TOKEN` and `CC_TELEGRAM_CHAT_ID`)
+- **Dark/Light theme** — Follows system preference, manual toggle with localStorage persistence
 - **Reverse proxy** — Access each instance's Web UI through a single entry point (`/instance/{id}/`)
 - **Auto-updating containers** — Base image includes OpenCode + Oh My OpenCode, updated on each container start
-- **Dark-themed dashboard** — Server-rendered HTMX frontend, no build step required
 
 ## Quick Start
 
@@ -41,26 +44,35 @@ Browser → CloudCode Platform (Go + HTMX)
                         web :10000)  web :10001)  web :10002)
 ```
 
-Each container runs `opencode web` and is accessible through the platform's reverse proxy. All containers share the same global configuration via bind mounts.
+Each container runs `opencode web` and is accessible through the platform's reverse proxy.
 
 ## Configuration
 
 Global config is managed through the Settings page and bind-mounted into all containers:
 
-| Host Path | Container Path | Contents |
-|---|---|---|
-| `data/config/opencode/` | `/root/.config/opencode/` | `opencode.json`, `AGENTS.md`, `package.json`, etc. |
-| `data/config/opencode-data/` | `/root/.local/share/opencode/` | `auth.json` |
-| `data/config/dot-opencode/` | `/root/.opencode/` | `package.json` |
-
-Subdirectories `commands/`, `agents/`, `skills/`, and `plugins/` are also managed through the Settings UI.
+| Host Path | Container Path | Scope | Contents |
+|---|---|---|---|
+| `data/config/opencode/` | `/root/.config/opencode/` | Global | `opencode.jsonc`, `AGENTS.md`, `package.json`, commands/, agents/, skills/, plugins/ |
+| `data/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | Per-instance | Session data, databases |
+| `data/config/opencode-data/` | — | Global | `auth.json` (copied to each instance on first start) |
+| `data/config/dot-opencode/` | `/root/.opencode/` | Global | `package.json` |
+| `data/config/agents-skills/` | `/root/.agents/skills/` | Global | Skills installed via [skills.sh](https://skills.sh) |
 
 Environment variables (e.g. `ANTHROPIC_API_KEY`, `GH_TOKEN`) are configured in Settings and injected into all containers.
+
+### Telegram Notifications
+
+Set these environment variables in Settings to receive notifications:
+
+- `CC_TELEGRAM_BOT_TOKEN` — Your Telegram Bot API token
+- `CC_TELEGRAM_CHAT_ID` — Target chat/group ID
+
+The built-in plugin listens for `session.idle` (task completed) and `session.error` events.
 
 ## Tech Stack
 
 - **Backend**: Go 1.25, `net/http` stdlib router, SQLite (via `modernc.org/sqlite`)
-- **Frontend**: `html/template` + HTMX, vanilla CSS/JS
+- **Frontend**: `html/template` + HTMX, vanilla CSS/JS, dark/light theme
 - **Containers**: Docker SDK (`github.com/moby/moby/client`)
 - **Base Image**: Ubuntu 24.04 + Go + Node 22 + Bun + OpenCode + Oh My OpenCode
 
