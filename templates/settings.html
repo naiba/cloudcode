@@ -5,7 +5,7 @@
 
 <div class="card">
     <h2>Environment Variables</h2>
-    <p class="hint">These environment variables are injected into all instances (e.g. GH_TOKEN, ANTHROPIC_API_KEY).</p>
+    <p class="hint">These environment variables are injected into all instances (e.g. GH_TOKEN, ANTHROPIC_API_KEY). Set <code>CC_TELEGRAM_BOT_TOKEN</code> and <code>CC_TELEGRAM_CHAT_ID</code> to receive Telegram notifications when tasks complete.</p>
     <form hx-post="/settings/env" hx-swap="none" id="env-form">
         <div id="env-rows">
             {{range $key, $val := .EnvVars}}

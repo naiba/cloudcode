@@ -1,11 +1,15 @@
 package config
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+//go:embed plugins/_cloudcode-telegram.ts
+var telegramPlugin []byte
 
 const (
 	DirOpenCodeConfig = "opencode"      // → /root/.config/opencode/
@@ -80,6 +84,12 @@ func (m *Manager) ensureDirs() error {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
+
+	pluginPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-telegram.ts")
+	if err := os.WriteFile(pluginPath, telegramPlugin, 0640); err != nil {
+		return fmt.Errorf("write telegram plugin: %w", err)
+	}
+
 	return nil
 }
 
