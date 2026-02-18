@@ -77,6 +77,3 @@ go vet ./...
 go build ./...
 ```
 
-## License
-
-MIT
