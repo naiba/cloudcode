@@ -146,24 +146,30 @@ OpenCode Web UI 通过 Referer-based routing 方案代理，**不改写**响应�
 
 ### 路由策略
 
-1. **入口代理** `/instance/{id}/` — strip prefix 后转发到容器（`ServeHTTP`）
+1. **入口代理** `/instance/{id}/` — strip prefix 后转发到容器（`ServeHTTP`），同时设置 `_cc_inst` cookie 记录当前实例 ID
 2. **Catch-all fallback** `"/"` — 注册在所有平台路由之后，匹配所有未命中的路径
-   - 从 `Referer` 头提取 `/instance/{id}/` 中的 instance ID
+   - 优先从 `Referer` 头提取 `/instance/{id}/` 中的 instance ID
+   - Referer 无法提取时，从 `_cc_inst` cookie 获取（覆盖 SPA pushState 跳转后 Referer 丢失的场景）
    - 原始路径直接转发到容器（`ServeHTTPDirect`），不做任何路径修改
    - `httputil.ReverseProxy` 自动处理 WebSocket 升级（`Upgrade: websocket`）、SSE 等
-3. **无 Referer** 的请求返回 404（不属于任何实例）
+3. **无 Referer 且无 cookie** 的请求返回 404（不属于任何实例）
 
 ### 工作原理
 
-浏览器访问 `/instance/{id}/` → 容器返回 SPA HTML（资源路径为 `/assets/xxx.js`）  
+浏览器访问 `/instance/{id}/` → 设置 `_cc_inst` cookie → 容器返回 SPA HTML（资源路径为 `/assets/xxx.js`）  
 → 浏览器请求 `/assets/xxx.js`，带 `Referer: http://host/instance/{id}/`  
 → catch-all handler 从 Referer 提取 ID → 直接代理到容器 → 容器正常响应
+
+SPA 内部通过 `history.pushState` 跳转到 `/L3Jvb3QvY2xvdWRjb2Rl/session` 等路径后：  
+→ 后续请求的 Referer 不再包含 `/instance/{id}/`  
+→ catch-all handler 从 `_cc_inst` cookie 获取 instance ID → 代理到容器
 
 ### 注意事项
 
 - `httputil.ReverseProxy` 原生支持 WebSocket：当请求包含 `Upgrade` 头时自动进行协议升级并双向桥接
 - OpenCode SDK 的 API 请求（`/global/`、`/path`、`/project` 等）和静态资源（`/assets/`）都通过同一个 catch-all 机制处理
 - 容器内 OpenCode 使用 `window.location.origin` 拼接 API URL，指向平台根路径，因此都会被 catch-all 捕获
+- cookie 是全局的（`Path=/`），同时只能有一个活跃的 Web UI 实例，打开新实例会覆盖旧的 cookie
 
 ## 关键约束
 
