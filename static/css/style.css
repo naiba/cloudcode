@@ -224,7 +224,7 @@ body {
 .detail-value {
     font-size: 0.9rem;
 }
-.mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; }
+.mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; word-break: break-all; }
 .detail-actions {
     display: flex;
     gap: 12px;
@@ -410,3 +410,19 @@ code {
 .htmx-request .btn { opacity: 0.6; pointer-events: none; }
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator { display: inline; }
+button[disabled] { opacity: 0.6; cursor: not-allowed; }
+
+/* Spinner */
+.spinner {
+    display: none;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+button[disabled] .spinner { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }

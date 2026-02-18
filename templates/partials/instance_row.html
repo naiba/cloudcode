@@ -11,24 +11,25 @@
     <td class="actions">
         {{if eq .Status "running"}}
         <a href="/instance/{{.ID}}/" target="_blank" class="btn btn-sm btn-success" title="Open Web UI">Open</a>
+        <a href="/instances/{{.ID}}/terminal" target="_blank" class="btn btn-sm btn-secondary" title="Terminal">Terminal</a>
         <button hx-post="/instances/{{.ID}}/stop"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
-                class="btn btn-sm btn-warning">Stop</button>
+                hx-disabled-elt="this"
+                class="btn btn-sm btn-warning"><span class="htmx-indicator spinner"></span>Stop</button>
         <button hx-post="/instances/{{.ID}}/restart"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
-                class="btn btn-sm btn-secondary">Restart</button>
-        {{else if or (eq .Status "stopped") (eq .Status "exited") (eq .Status "created")}}
+                hx-disabled-elt="this"
+                class="btn btn-sm btn-secondary"><span class="htmx-indicator spinner"></span>Restart</button>
+        {{else if or (eq .Status "stopped") (eq .Status "exited") (eq .Status "created") (eq .Status "error")}}
         <button hx-post="/instances/{{.ID}}/start"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
-                class="btn btn-sm btn-primary">Start</button>
+                hx-disabled-elt="this"
+                class="btn btn-sm btn-primary"><span class="htmx-indicator spinner"></span>Start</button>
         {{end}}
-        <button hx-get="/instances/{{.ID}}/logs"
-                hx-target="#log-modal-content"
-                hx-swap="innerHTML"
-                onclick="document.getElementById('log-modal').showModal()"
+        <button onclick="openLogs('{{.ID}}')"
                 class="btn btn-sm btn-secondary">Logs</button>
         <button hx-delete="/instances/{{.ID}}"
                 hx-target="#instance-{{.ID}}"

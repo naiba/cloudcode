@@ -17,6 +17,7 @@ type Instance struct {
 	Name        string            `json:"name"`
 	ContainerID string            `json:"container_id"`
 	Status      string            `json:"status"` // created, running, stopped, error
+	ErrorMsg    string            `json:"error_msg"`
 	Port        int               `json:"port"`
 	WorkDir     string            `json:"work_dir"`
 	EnvVars     map[string]string `json:"env_vars"` // API keys, GH_TOKEN, etc.
@@ -61,6 +62,7 @@ func (s *Store) migrate() error {
 			name         TEXT NOT NULL UNIQUE,
 			container_id TEXT NOT NULL DEFAULT '',
 			status       TEXT NOT NULL DEFAULT 'created',
+			error_msg    TEXT NOT NULL DEFAULT '',
 			port         INTEGER NOT NULL DEFAULT 0,
 			work_dir     TEXT NOT NULL DEFAULT '/workspace',
 			env_vars     TEXT NOT NULL DEFAULT '{}',
@@ -68,7 +70,12 @@ func (s *Store) migrate() error {
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	s.db.Exec(`ALTER TABLE instances ADD COLUMN error_msg TEXT NOT NULL DEFAULT ''`)
+	return nil
 }
 
 // Create inserts a new instance.
@@ -83,9 +90,9 @@ func (s *Store) Create(inst *Instance) error {
 	inst.UpdatedAt = now
 
 	_, err = s.db.Exec(`
-		INSERT INTO instances (id, name, container_id, status, port, work_dir, env_vars, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, inst.ID, inst.Name, inst.ContainerID, inst.Status, inst.Port, inst.WorkDir, string(envJSON), inst.CreatedAt, inst.UpdatedAt)
+		INSERT INTO instances (id, name, container_id, status, error_msg, port, work_dir, env_vars, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, inst.ID, inst.Name, inst.ContainerID, inst.Status, inst.ErrorMsg, inst.Port, inst.WorkDir, string(envJSON), inst.CreatedAt, inst.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert instance: %w", err)
 	}
@@ -94,19 +101,19 @@ func (s *Store) Create(inst *Instance) error {
 
 // Get retrieves an instance by ID.
 func (s *Store) Get(id string) (*Instance, error) {
-	row := s.db.QueryRow(`SELECT id, name, container_id, status, port, work_dir, env_vars, created_at, updated_at FROM instances WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, name, container_id, status, error_msg, port, work_dir, env_vars, created_at, updated_at FROM instances WHERE id = ?`, id)
 	return scanInstance(row)
 }
 
 // GetByName retrieves an instance by name.
 func (s *Store) GetByName(name string) (*Instance, error) {
-	row := s.db.QueryRow(`SELECT id, name, container_id, status, port, work_dir, env_vars, created_at, updated_at FROM instances WHERE name = ?`, name)
+	row := s.db.QueryRow(`SELECT id, name, container_id, status, error_msg, port, work_dir, env_vars, created_at, updated_at FROM instances WHERE name = ?`, name)
 	return scanInstance(row)
 }
 
 // List returns all instances.
 func (s *Store) List() ([]*Instance, error) {
-	rows, err := s.db.Query(`SELECT id, name, container_id, status, port, work_dir, env_vars, created_at, updated_at FROM instances ORDER BY created_at DESC`)
+	rows, err := s.db.Query(`SELECT id, name, container_id, status, error_msg, port, work_dir, env_vars, created_at, updated_at FROM instances ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query instances: %w", err)
 	}
@@ -133,9 +140,9 @@ func (s *Store) Update(inst *Instance) error {
 	inst.UpdatedAt = time.Now()
 
 	_, err = s.db.Exec(`
-		UPDATE instances SET name=?, container_id=?, status=?, port=?, work_dir=?, env_vars=?, updated_at=?
+		UPDATE instances SET name=?, container_id=?, status=?, error_msg=?, port=?, work_dir=?, env_vars=?, updated_at=?
 		WHERE id=?
-	`, inst.Name, inst.ContainerID, inst.Status, inst.Port, inst.WorkDir, string(envJSON), inst.UpdatedAt, inst.ID)
+	`, inst.Name, inst.ContainerID, inst.Status, inst.ErrorMsg, inst.Port, inst.WorkDir, string(envJSON), inst.UpdatedAt, inst.ID)
 	if err != nil {
 		return fmt.Errorf("update instance: %w", err)
 	}
@@ -157,7 +164,7 @@ func (s *Store) Close() error {
 func scanInstance(row *sql.Row) (*Instance, error) {
 	var inst Instance
 	var envJSON string
-	if err := row.Scan(&inst.ID, &inst.Name, &inst.ContainerID, &inst.Status, &inst.Port, &inst.WorkDir, &envJSON, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &inst.ContainerID, &inst.Status, &inst.ErrorMsg, &inst.Port, &inst.WorkDir, &envJSON, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(envJSON), &inst.EnvVars); err != nil {
@@ -170,7 +177,7 @@ func scanInstance(row *sql.Row) (*Instance, error) {
 func scanInstanceRow(rows *sql.Rows) (*Instance, error) {
 	var inst Instance
 	var envJSON string
-	if err := rows.Scan(&inst.ID, &inst.Name, &inst.ContainerID, &inst.Status, &inst.Port, &inst.WorkDir, &envJSON, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+	if err := rows.Scan(&inst.ID, &inst.Name, &inst.ContainerID, &inst.Status, &inst.ErrorMsg, &inst.Port, &inst.WorkDir, &envJSON, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(envJSON), &inst.EnvVars); err != nil {

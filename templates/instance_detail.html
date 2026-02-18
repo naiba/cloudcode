@@ -32,19 +32,27 @@
         </div>
     </div>
 
+    {{if .Instance.ErrorMsg}}
+    <div class="alert alert-error">{{.Instance.ErrorMsg}}</div>
+    {{end}}
+
     <div class="detail-actions" id="instance-actions">
         {{if eq .Instance.Status "running"}}
         <a href="/instance/{{.Instance.ID}}/" target="_blank" class="btn btn-success">Open Web UI</a>
+        <a href="/instances/{{.Instance.ID}}/terminal" target="_blank" class="btn btn-secondary">Terminal</a>
         <button hx-post="/instances/{{.Instance.ID}}/stop"
                 hx-target="#instance-actions" hx-swap="outerHTML"
-                class="btn btn-warning">Stop</button>
+                hx-disabled-elt="this"
+                class="btn btn-warning"><span class="htmx-indicator spinner"></span>Stop</button>
         <button hx-post="/instances/{{.Instance.ID}}/restart"
                 hx-target="#instance-actions" hx-swap="outerHTML"
-                class="btn btn-secondary">Restart</button>
+                hx-disabled-elt="this"
+                class="btn btn-secondary"><span class="htmx-indicator spinner"></span>Restart</button>
         {{else}}
         <button hx-post="/instances/{{.Instance.ID}}/start"
                 hx-target="#instance-actions" hx-swap="outerHTML"
-                class="btn btn-primary">Start</button>
+                hx-disabled-elt="this"
+                class="btn btn-primary"><span class="htmx-indicator spinner"></span>Start</button>
         {{end}}
         <button hx-delete="/instances/{{.Instance.ID}}"
                 hx-confirm="Are you sure? This will destroy the container."
@@ -55,16 +63,31 @@
 <div class="card">
     <h2>Container Logs</h2>
     <div class="log-controls">
-        <button hx-get="/instances/{{.Instance.ID}}/logs"
-                hx-target="#log-output"
-                hx-swap="innerHTML"
-                class="btn btn-sm btn-secondary">Refresh Logs</button>
+        <button onclick="reconnectLogs()" class="btn btn-sm btn-secondary">Reconnect</button>
     </div>
-    <pre class="log-output" id="log-output"
-         hx-get="/instances/{{.Instance.ID}}/logs"
-         hx-trigger="load"
-         hx-swap="innerHTML">Loading logs...</pre>
+    <pre class="log-output" id="log-output">Connecting...</pre>
 </div>
+<script>
+var _detailLogsWS = null;
+function connectLogs() {
+    var el = document.getElementById('log-output');
+    if (_detailLogsWS) { _detailLogsWS.close(); }
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _detailLogsWS = new WebSocket(proto + '//' + location.host + '/instances/{{.Instance.ID}}/logs/ws');
+    _detailLogsWS.onopen = function() { el.textContent = ''; };
+    _detailLogsWS.onmessage = function(e) {
+        el.textContent += e.data;
+        el.scrollTop = el.scrollHeight;
+    };
+    _detailLogsWS.onclose = function() { el.textContent += '\n[Connection closed]'; };
+    _detailLogsWS.onerror = function() { el.textContent += '\n[Connection error]'; };
+}
+function reconnectLogs() {
+    document.getElementById('log-output').textContent = 'Connecting...';
+    connectLogs();
+}
+connectLogs();
+</script>
 
 <div class="card">
     <h2>Configuration</h2>
