@@ -15,7 +15,7 @@ const (
 )
 
 var OpenCodeConfigFiles = []string{
-	"opencode.json",
+	"opencode.jsonc",
 	"oh-my-opencode.json",
 	"package.json",
 }
@@ -107,7 +107,7 @@ func (m *Manager) SetEnvVars(env map[string]string) error {
 	return os.WriteFile(filepath.Join(m.rootDir, FileEnvVars), data, 0600)
 }
 
-// ReadFile reads a config file by relPath (e.g. "opencode/opencode.json").
+// ReadFile reads a config file by relPath (e.g. "opencode/opencode.jsonc").
 // Returns empty string if file doesn't exist.
 func (m *Manager) ReadFile(relPath string) (string, error) {
 	p := filepath.Join(m.rootDir, relPath)
@@ -159,7 +159,7 @@ type ConfigFileInfo struct {
 
 func (m *Manager) EditableFiles() []ConfigFileInfo {
 	return []ConfigFileInfo{
-		{Name: "opencode.json", RelPath: filepath.Join(DirOpenCodeConfig, "opencode.json"), Hint: "OpenCode 主配置（providers, MCP servers, plugins）"},
+		{Name: "opencode.jsonc", RelPath: filepath.Join(DirOpenCodeConfig, "opencode.jsonc"), Hint: "OpenCode 主配置（providers, MCP servers, plugins）"},
 		{Name: "oh-my-opencode.json", RelPath: filepath.Join(DirOpenCodeConfig, "oh-my-opencode.json"), Hint: "Oh My OpenCode 配置（agent/category model assignments）"},
 		{Name: "AGENTS.md", RelPath: filepath.Join(DirOpenCodeConfig, "AGENTS.md"), Hint: "全局 Rules：自定义指令，所有实例共享（等同 ~/.config/opencode/AGENTS.md）"},
 		{Name: "auth.json", RelPath: filepath.Join(DirOpenCodeData, "auth.json"), Hint: "API 密钥和 OAuth tokens（Anthropic, OpenAI 等）"},
