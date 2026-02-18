@@ -394,6 +394,18 @@ code {
 .dir-file-item:hover { background: var(--bg-hover); }
 .dir-file-name { font-size: 0.85rem; }
 
+/* Site Footer */
+.site-footer {
+    margin-top: 48px;
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+    text-align: center;
+}
+.footer-version {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
 /* HTMX loading indicator */
 .htmx-request .btn { opacity: 0.6; pointer-events: none; }
 .htmx-indicator { display: none; }
