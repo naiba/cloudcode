@@ -28,8 +28,10 @@ func New() *ReverseProxy {
 }
 
 // Register adds or updates a proxy route for an instance.
+// Traffic is routed via Docker network using container name (cloudcode-{id}).
 func (rp *ReverseProxy) Register(instanceID string, port int) error {
-	target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
+	containerName := fmt.Sprintf("cloudcode-%s", instanceID)
+	target, err := url.Parse(fmt.Sprintf("http://%s:%d", containerName, port))
 	if err != nil {
 		return fmt.Errorf("parse target URL: %w", err)
 	}

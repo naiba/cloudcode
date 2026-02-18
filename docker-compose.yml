@@ -8,4 +8,11 @@ services:
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cloudcode-net
     restart: unless-stopped
+
+networks:
+  cloudcode-net:
+    external: true
+    name: cloudcode-net

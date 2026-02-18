@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -128,8 +127,6 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 		}
 	}
 
-	internalPort := network.MustParsePort(fmt.Sprintf("%d/tcp", inst.Port))
-
 	resp, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: containerName,
 		Config: &container.Config{
@@ -140,17 +137,9 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 				labelManaged: "true",
 				labelInstID:  inst.ID,
 			},
-			ExposedPorts: network.PortSet{
-				internalPort: struct{}{},
-			},
 		},
 		HostConfig: &container.HostConfig{
 			Mounts: mounts,
-			PortBindings: network.PortMap{
-				internalPort: []network.PortBinding{
-					{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: fmt.Sprintf("%d", inst.Port)},
-				},
-			},
 			RestartPolicy: container.RestartPolicy{
 				Name: "unless-stopped",
 			},
