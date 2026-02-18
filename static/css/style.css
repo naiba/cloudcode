@@ -45,6 +45,10 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 a, a:visited, a:link { color: inherit; }
+a.btn-primary, a.btn-primary:visited, a.btn-primary:link { color: #fff; }
+a.btn-success, a.btn-success:visited, a.btn-success:link { color: #fff; }
+a.btn-warning, a.btn-warning:visited, a.btn-warning:link { color: #000; }
+a.btn-danger, a.btn-danger:visited, a.btn-danger:link { color: var(--danger); }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;

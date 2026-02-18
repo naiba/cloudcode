@@ -1,5 +1,5 @@
 {{define "instance_row"}}
-<tr id="instance-{{.ID}}" hx-get="/instances/{{.ID}}/status" hx-trigger="every 10s" hx-swap="outerHTML">
+<tr id="instance-{{.ID}}" hx-get="/instances/{{.ID}}/status" hx-trigger="every 10s" hx-swap="outerHTML" hx-indicator="find .status-indicator">
     <td>
         <a href="/instances/{{.ID}}" class="instance-name">{{.Name}}</a>
     </td>
