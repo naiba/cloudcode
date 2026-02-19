@@ -72,17 +72,15 @@ func (m *Manager) ensureNetwork(ctx context.Context) error {
 }
 
 func (m *Manager) ensureImage(ctx context.Context) error {
-	exists, err := m.ImageExists(ctx)
-	if err != nil {
-		return fmt.Errorf("check image: %w", err)
-	}
-	if exists {
-		return nil
-	}
-
-	log.Printf("Image %s not found, pulling...", m.image)
+	log.Printf("Pulling latest image %s...", m.image)
 	reader, err := m.cli.ImagePull(ctx, m.image, client.ImagePullOptions{})
 	if err != nil {
+		// pull 失败时，如果本地已有镜像则继续使用
+		exists, checkErr := m.ImageExists(ctx)
+		if checkErr == nil && exists {
+			log.Printf("Pull failed (%v), using existing local image %s", err, m.image)
+			return nil
+		}
 		return fmt.Errorf("pull image %s: %w", m.image, err)
 	}
 	defer reader.Close()
