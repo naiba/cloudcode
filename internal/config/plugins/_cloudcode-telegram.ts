@@ -50,6 +50,13 @@ export const CloudCodeTelegram = async (input: any) => {
     return res?.data ?? res ?? null
   }
 
+  const isChildSession = (session: any): boolean => {
+    if (session.parentID || session.parent_id) return true
+    const title = session.title || ""
+    if (title.includes("subagent)") || title.startsWith("Child session - ")) return true
+    return false
+  }
+
   const getMessages = async (sessionID: string) => {
     if (!client) return []
     const res = await client.session.messages({ path: { id: sessionID } })
@@ -59,13 +66,16 @@ export const CloudCodeTelegram = async (input: any) => {
 
   return {
     event: async ({ event }: { event: { type: string; properties: any } }) => {
-      if (event.type === "session.idle") {
+      const isIdle =
+        event.type === "session.idle" ||
+        (event.type === "session.status" && event.properties?.status?.type === "idle")
+      if (isIdle) {
         const sessionID = event.properties?.sessionID
         if (!sessionID) return
 
         try {
           const session = await getSession(sessionID)
-          if (!session || session.parentID) return
+          if (!session || isChildSession(session)) return
 
           const title = session.title || ""
           const createdAt = session.time?.created || 0
@@ -112,7 +122,7 @@ export const CloudCodeTelegram = async (input: any) => {
         if (sessionID) {
           try {
             const session = await getSession(sessionID)
-            if (session?.parentID) return
+            if (session && isChildSession(session)) return
           } catch {}
         }
 
@@ -134,7 +144,7 @@ export const CloudCodeTelegram = async (input: any) => {
         if (sessionID) {
           try {
             const session = await getSession(sessionID)
-            if (session?.parentID) return
+            if (session && isChildSession(session)) return
           } catch {}
         }
 
@@ -158,7 +168,7 @@ export const CloudCodeTelegram = async (input: any) => {
         if (sessionID) {
           try {
             const session = await getSession(sessionID)
-            if (session?.parentID) return
+            if (session && isChildSession(session)) return
           } catch {}
         }
 
