@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io"
@@ -128,8 +130,14 @@ func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 	return ok
 }
 
+func generateNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func injectInstanceIsolation(instanceID string) func(*http.Response) error {
-	script := `<script>
+	scriptBody := `
 (function() {
   var K = "_cc_active_inst";
   var ID = "` + instanceID + `";
@@ -187,7 +195,7 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
     if (this === localStorage) sync();
   };
 })();
-</script>`
+`
 
 	return func(resp *http.Response) error {
 		ct := resp.Header.Get("Content-Type")
@@ -201,12 +209,19 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
 			return err
 		}
 
-		injection := []byte(script)
 		headTag := []byte("<head>")
 		idx := bytes.Index(bytes.ToLower(body), headTag)
 		if idx == -1 {
 			resp.Body = io.NopCloser(bytes.NewReader(body))
 			return nil
+		}
+
+		nonce := generateNonce()
+		injection := []byte(`<script nonce="` + nonce + `">` + scriptBody + `</script>`)
+
+		if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+			csp = strings.Replace(csp, "script-src ", "script-src 'nonce-"+nonce+"' ", 1)
+			resp.Header.Set("Content-Security-Policy", csp)
 		}
 
 		insertAt := idx + len(headTag)
