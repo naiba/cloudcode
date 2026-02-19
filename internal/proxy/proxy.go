@@ -53,7 +53,7 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		req.Host = target.Host
 		req.Header.Del("Accept-Encoding")
 	}
-	stripProxy.ModifyResponse = injectBeforeUnloadSaver(instanceID)
+	stripProxy.ModifyResponse = injectInstanceIsolation(instanceID)
 	stripProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -128,22 +128,66 @@ func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 	return ok
 }
 
-func injectBeforeUnloadSaver(instanceID string) func(*http.Response) error {
-	script := `<script>(function(){` +
-		`var k="_cc_active_inst",id="` + instanceID + `";` +
-		`localStorage.setItem(k,id);` +
-		`function isShared(n){` +
-		`return n===k||n.startsWith("_cc_store_")||` +
-		`n==="theme"||n==="opencode-theme-id"||n==="opencode-color-scheme"||` +
-		`n.startsWith("opencode-theme-css-")}` +
-		`window.addEventListener("beforeunload",function(){` +
-		`var save={};` +
-		`for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
-		`if(!isShared(n))save[n]=localStorage.getItem(n)}` +
-		`localStorage.setItem("_cc_store_"+id,JSON.stringify(save));` +
-		`var rm=[];for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
-		`if(!isShared(n))rm.push(n)}rm.forEach(function(n){localStorage.removeItem(n)})})` +
-		`})()</script>`
+func injectInstanceIsolation(instanceID string) func(*http.Response) error {
+	script := `<script>
+(function() {
+  var K = "_cc_active_inst";
+  var ID = "` + instanceID + `";
+  var SK = "_cc_store_" + ID;
+
+  function isShared(n) {
+    return n === K || n.startsWith("_cc_store_") ||
+      n === "theme" || n === "opencode-theme-id" || n === "opencode-color-scheme" ||
+      n.startsWith("opencode-theme-css-");
+  }
+
+  var toRemove = [];
+  for (var i = localStorage.length; i--;) {
+    var n = localStorage.key(i);
+    if (!isShared(n)) toRemove.push(n);
+  }
+  toRemove.forEach(function(n) { localStorage.removeItem(n); });
+
+  var saved = localStorage.getItem(SK);
+  if (saved) {
+    try {
+      var d = JSON.parse(saved);
+      Object.keys(d).forEach(function(n) { localStorage.setItem(n, d[n]); });
+    } catch(e) {}
+  }
+  localStorage.setItem(K, ID);
+
+  var _set = Storage.prototype.setItem;
+  var _rm = Storage.prototype.removeItem;
+  var _cl = Storage.prototype.clear;
+  var syncing = false;
+
+  function sync() {
+    if (syncing) return;
+    syncing = true;
+    var s = {};
+    for (var i = localStorage.length; i--;) {
+      var n = localStorage.key(i);
+      if (!isShared(n)) s[n] = localStorage.getItem(n);
+    }
+    _set.call(localStorage, SK, JSON.stringify(s));
+    syncing = false;
+  }
+
+  Storage.prototype.setItem = function(n, v) {
+    _set.call(this, n, v);
+    if (this === localStorage && !isShared(n)) sync();
+  };
+  Storage.prototype.removeItem = function(n) {
+    _rm.call(this, n);
+    if (this === localStorage && !isShared(n)) sync();
+  };
+  Storage.prototype.clear = function() {
+    _cl.call(this);
+    if (this === localStorage) sync();
+  };
+})();
+</script>`
 
 	return func(resp *http.Response) error {
 		ct := resp.Header.Get("Content-Type")
