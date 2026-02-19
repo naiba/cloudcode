@@ -69,7 +69,9 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 	directProxy.Director = func(req *http.Request) {
 		origDirectDirector(req)
 		req.Host = target.Host
+		req.Header.Del("Accept-Encoding")
 	}
+	directProxy.ModifyResponse = injectInstanceIsolation(instanceID)
 	directProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
