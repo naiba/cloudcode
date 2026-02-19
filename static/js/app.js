@@ -70,7 +70,14 @@ document.addEventListener('htmx:responseError', function(event) {
     showToast(msg, 'error');
 });
 
-document.addEventListener('instanceDeleted', function() {
+document.addEventListener('instanceDeleted', function(event) {
+    var id = event.detail && event.detail.id;
+    if (id) {
+        localStorage.removeItem('_cc_store_' + id);
+        if (localStorage.getItem('_cc_active_inst') === id) {
+            localStorage.removeItem('_cc_active_inst');
+        }
+    }
     window.location.reload();
 });
 

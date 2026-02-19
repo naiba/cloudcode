@@ -131,16 +131,24 @@ func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 func instanceStorageIsolator(instanceID string) func(*http.Response) error {
 	script := `<script>(function(){` +
 		`var k="_cc_active_inst",id="` + instanceID + `";` +
-		`if(localStorage.getItem(k)===id)return;` +
-		`var preserve={};` +
-		`["opencode-theme-id","opencode-color-scheme","theme"].forEach(function(p){` +
-		`var v=localStorage.getItem(p);if(v!==null)preserve[p]=v});` +
-		`var i=localStorage.length;while(i--){var n=localStorage.key(i);` +
-		`if(n&&n.startsWith("opencode-theme-css-")){preserve[n]=localStorage.getItem(n)}}` +
-		`i=localStorage.length;while(i--){var n=localStorage.key(i);` +
-		`if(n&&n.startsWith("opencode.global.dat:")){preserve[n]=localStorage.getItem(n)}}` +
-		`localStorage.clear();` +
-		`Object.keys(preserve).forEach(function(p){localStorage.setItem(p,preserve[p])});` +
+		`var old=localStorage.getItem(k);` +
+		`if(old===id)return;` +
+		`function isShared(n){` +
+		`return n===k||n.startsWith("_cc_store_")||` +
+		`n==="theme"||n==="opencode-theme-id"||n==="opencode-color-scheme"||` +
+		`n.startsWith("opencode-theme-css-")||n.startsWith("opencode.global.dat:")}` +
+		`if(old){` +
+		`var save={};` +
+		`for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
+		`if(!isShared(n)){save[n]=localStorage.getItem(n)}}` +
+		`localStorage.setItem("_cc_store_"+old,JSON.stringify(save))}` +
+		`var toRemove=[];` +
+		`for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
+		`if(!isShared(n))toRemove.push(n)}` +
+		`toRemove.forEach(function(n){localStorage.removeItem(n)});` +
+		`var saved=localStorage.getItem("_cc_store_"+id);` +
+		`if(saved){try{var d=JSON.parse(saved);` +
+		`Object.keys(d).forEach(function(n){localStorage.setItem(n,d[n])})}catch(e){}}` +
 		`localStorage.setItem(k,id)` +
 		`})()</script>`
 

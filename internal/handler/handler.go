@@ -272,14 +272,11 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if request is from instance detail page (via Referer)
 	referer := r.Header.Get("Referer")
 	if referer != "" && strings.Contains(referer, "/instances/") {
-		// From detail page, redirect to dashboard
 		w.Header().Set("HX-Redirect", "/")
 	} else {
-		// From dashboard, trigger event to remove row
-		w.Header().Set("HX-Trigger", "instanceDeleted")
+		w.Header().Set("HX-Trigger", fmt.Sprintf(`{"instanceDeleted":{"id":"%s"}}`, id))
 	}
 	w.WriteHeader(http.StatusOK)
 }

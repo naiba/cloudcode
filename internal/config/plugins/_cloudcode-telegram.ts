@@ -6,6 +6,7 @@ export const CloudCodeTelegram = async (input: any) => {
   const instanceName = process.env.CC_INSTANCE_NAME || ""
   const host = process.env.HOSTNAME || "unknown"
   const client = input?.client
+  const tag = instanceName ? `\`${instanceName}\`` : `\`${host}\``
 
   const send = async (text: string) => {
     try {
@@ -43,22 +44,30 @@ export const CloudCodeTelegram = async (input: any) => {
     return remainMins > 0 ? `${hours}h${remainMins}m` : `${hours}h`
   }
 
+  const getSession = async (sessionID: string) => {
+    if (!client) return null
+    const res = await client.session.get({ path: { id: sessionID } })
+    return res?.data ?? res ?? null
+  }
+
+  const getMessages = async (sessionID: string) => {
+    if (!client) return []
+    const res = await client.session.messages({ path: { id: sessionID } })
+    const list = res?.data ?? res
+    return Array.isArray(list) ? list : []
+  }
+
   return {
     event: async ({ event }: { event: { type: string; properties: any } }) => {
       if (event.type === "session.idle") {
         const sessionID = event.properties?.sessionID
-        if (!client || !sessionID) return
+        if (!sessionID) return
 
         try {
-          const session = await client.session.retrieve(sessionID)
-          if (!session) return
-
-          // Skip sub-agent sessions — only notify for top-level sessions
-          if (session.parentID) return
+          const session = await getSession(sessionID)
+          if (!session || session.parentID) return
 
           const title = session.title || ""
-
-          // Calculate duration from session timestamps
           const createdAt = session.time?.created || 0
           const updatedAt = session.time?.updated || 0
           let duration = ""
@@ -67,12 +76,9 @@ export const CloudCodeTelegram = async (input: any) => {
             if (durationSec > 0) duration = formatDuration(durationSec)
           }
 
-          // Aggregate cost and tokens across all assistant messages
           let totalCost = 0
           const totalTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-
-          const msgs = await client.session.messages(sessionID)
-          const msgList = Array.isArray(msgs) ? msgs : msgs?.data || []
+          const msgList = await getMessages(sessionID)
           for (const msg of msgList) {
             const info = msg.info || msg
             if (info.role !== "assistant") continue
@@ -86,7 +92,6 @@ export const CloudCodeTelegram = async (input: any) => {
             }
           }
 
-          const tag = instanceName ? `\`${instanceName}\`` : `\`${host}\``
           const lines = [`✅ *Task Completed*`]
           if (title) lines.push(`📋 ${title}`)
           lines.push(`🖥 ${tag}`)
@@ -104,10 +109,9 @@ export const CloudCodeTelegram = async (input: any) => {
         const p = event.properties
         const sessionID = p?.sessionID
 
-        // Skip sub-agent session errors
-        if (client && sessionID) {
+        if (sessionID) {
           try {
-            const session = await client.session.retrieve(sessionID)
+            const session = await getSession(sessionID)
             if (session?.parentID) return
           } catch {}
         }
@@ -115,7 +119,6 @@ export const CloudCodeTelegram = async (input: any) => {
         const errorName = p?.error?.name || "Unknown"
         const errorMsg = p?.error?.data?.message || p?.error?.data?.providerID || ""
 
-        const tag = instanceName ? `\`${instanceName}\`` : `\`${host}\``
         const lines = [`❌ *Session Error*`]
         lines.push(`🖥 ${tag}`)
         lines.push(`⚡ ${errorName}`)
@@ -126,16 +129,46 @@ export const CloudCodeTelegram = async (input: any) => {
 
       if (event.type === "permission.asked") {
         const p = event.properties
+        const sessionID = p?.sessionID
+
+        if (sessionID) {
+          try {
+            const session = await getSession(sessionID)
+            if (session?.parentID) return
+          } catch {}
+        }
+
         const permission = p?.permission || "unknown"
         const metadata = p?.metadata || {}
         const tool = metadata?.tool || permission
 
-        const tag = instanceName ? `\`${instanceName}\`` : `\`${host}\``
-        const lines = [`⚠️ *Action Required*`]
+        const lines = [`🔐 *Permission Required*`]
         lines.push(`🖥 ${tag}`)
-        lines.push(`🔐 ${tool}`)
+        lines.push(`⚙️ ${tool}`)
         if (metadata?.path) lines.push(`📁 \`${metadata.path}\``)
         if (metadata?.command) lines.push(`💻 \`${metadata.command}\``)
+
+        await send(lines.join("\n"))
+      }
+
+      if (event.type === "question.asked") {
+        const p = event.properties
+        const sessionID = p?.sessionID
+
+        if (sessionID) {
+          try {
+            const session = await getSession(sessionID)
+            if (session?.parentID) return
+          } catch {}
+        }
+
+        const questions = p?.questions || []
+        const lines = [`❓ *Input Required*`]
+        lines.push(`🖥 ${tag}`)
+        for (const q of questions) {
+          if (q.header) lines.push(`📋 ${q.header}`)
+          if (q.question) lines.push(`${q.question}`)
+        }
 
         await send(lines.join("\n"))
       }
