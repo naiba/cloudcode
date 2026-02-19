@@ -136,7 +136,7 @@ func instanceStorageIsolator(instanceID string) func(*http.Response) error {
 		`function isShared(n){` +
 		`return n===k||n.startsWith("_cc_store_")||` +
 		`n==="theme"||n==="opencode-theme-id"||n==="opencode-color-scheme"||` +
-		`n.startsWith("opencode-theme-css-")||n.startsWith("opencode.global.dat:")}` +
+		`n.startsWith("opencode-theme-css-")}` +
 		`if(old){` +
 		`var save={};` +
 		`for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
