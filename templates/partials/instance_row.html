@@ -10,7 +10,7 @@
     <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
     <td class="actions">
         {{if eq .Status "running"}}
-        <a href="/instance/{{.ID}}/" target="_blank" class="btn btn-sm btn-success" title="Only one Web UI can be active at a time">Open</a>
+        <a href="javascript:void(0)" onclick="switchInstance('{{.ID}}')" class="btn btn-sm btn-success" title="Only one Web UI can be active at a time">Open</a>
         <a href="/instances/{{.ID}}/terminal" target="_blank" class="btn btn-sm btn-secondary" title="Terminal">Terminal</a>
         <button hx-post="/instances/{{.ID}}/stop"
                 hx-target="#instance-{{.ID}}"

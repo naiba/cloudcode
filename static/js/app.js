@@ -81,6 +81,41 @@ document.addEventListener('instanceDeleted', function(event) {
     window.location.reload();
 });
 
+/* localStorage isolation between opencode instances */
+var _CC_KEY = '_cc_active_inst';
+
+function _ccIsShared(n) {
+    return n === _CC_KEY || n.startsWith('_cc_store_') ||
+        n === 'theme' || n === 'opencode-theme-id' || n === 'opencode-color-scheme' ||
+        n.startsWith('opencode-theme-css-');
+}
+
+function _ccClearNonShared() {
+    var toRemove = [];
+    for (var i = localStorage.length; i--;) {
+        var n = localStorage.key(i);
+        if (!_ccIsShared(n)) toRemove.push(n);
+    }
+    toRemove.forEach(function(n) { localStorage.removeItem(n); });
+}
+
+function _ccRestoreInstance(id) {
+    var saved = localStorage.getItem('_cc_store_' + id);
+    if (saved) {
+        try {
+            var d = JSON.parse(saved);
+            Object.keys(d).forEach(function(n) { localStorage.setItem(n, d[n]); });
+        } catch(e) {}
+    }
+}
+
+function switchInstance(id) {
+    _ccClearNonShared();
+    _ccRestoreInstance(id);
+    localStorage.setItem(_CC_KEY, id);
+    window.open('/instance/' + id + '/', '_blank');
+}
+
 document.addEventListener('htmx:beforeSwap', function(event) {
     if (event.detail.xhr.status === 201) {
         var redirect = event.detail.xhr.getResponseHeader('HX-Redirect');

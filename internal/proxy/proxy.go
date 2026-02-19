@@ -53,7 +53,7 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		req.Host = target.Host
 		req.Header.Del("Accept-Encoding")
 	}
-	stripProxy.ModifyResponse = instanceStorageIsolator(instanceID)
+	stripProxy.ModifyResponse = injectBeforeUnloadSaver(instanceID)
 	stripProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -128,28 +128,21 @@ func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 	return ok
 }
 
-func instanceStorageIsolator(instanceID string) func(*http.Response) error {
+func injectBeforeUnloadSaver(instanceID string) func(*http.Response) error {
 	script := `<script>(function(){` +
 		`var k="_cc_active_inst",id="` + instanceID + `";` +
-		`var old=localStorage.getItem(k);` +
-		`if(old===id)return;` +
+		`localStorage.setItem(k,id);` +
 		`function isShared(n){` +
 		`return n===k||n.startsWith("_cc_store_")||` +
 		`n==="theme"||n==="opencode-theme-id"||n==="opencode-color-scheme"||` +
 		`n.startsWith("opencode-theme-css-")}` +
-		`if(old){` +
+		`window.addEventListener("beforeunload",function(){` +
 		`var save={};` +
 		`for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
-		`if(!isShared(n)){save[n]=localStorage.getItem(n)}}` +
-		`localStorage.setItem("_cc_store_"+old,JSON.stringify(save))}` +
-		`var toRemove=[];` +
-		`for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
-		`if(!isShared(n))toRemove.push(n)}` +
-		`toRemove.forEach(function(n){localStorage.removeItem(n)});` +
-		`var saved=localStorage.getItem("_cc_store_"+id);` +
-		`if(saved){try{var d=JSON.parse(saved);` +
-		`Object.keys(d).forEach(function(n){localStorage.setItem(n,d[n])})}catch(e){}}` +
-		`localStorage.setItem(k,id)` +
+		`if(!isShared(n))save[n]=localStorage.getItem(n)}` +
+		`localStorage.setItem("_cc_store_"+id,JSON.stringify(save));` +
+		`var rm=[];for(var i=localStorage.length;i--;){var n=localStorage.key(i);` +
+		`if(!isShared(n))rm.push(n)}rm.forEach(function(n){localStorage.removeItem(n)})})` +
 		`})()</script>`
 
 	return func(resp *http.Response) error {
