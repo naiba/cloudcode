@@ -102,11 +102,12 @@
         <tbody>
             <tr><td class="mono">{{.ConfigDir}}/opencode/</td><td class="mono">/root/.config/opencode/</td></tr>
             <tr><td class="mono">{{.ConfigDir}}/instances/{id}/opencode-data/</td><td class="mono">/root/.local/share/opencode/</td></tr>
+            <tr><td class="mono">{{.ConfigDir}}/opencode-data/auth.json</td><td class="mono">/root/.local/share/opencode/auth.json</td></tr>
             <tr><td class="mono">{{.ConfigDir}}/dot-opencode/</td><td class="mono">/root/.opencode/</td></tr>
             <tr><td class="mono">{{.ConfigDir}}/agents-skills/</td><td class="mono">/root/.agents/skills/</td></tr>
         </tbody>
         <tfoot>
-            <tr><td colspan="2" style="font-size:0.8rem;color:var(--text-muted)">Session data is isolated per instance. Auth tokens (auth.json above) are copied from global on first start.</td></tr>
+            <tr><td colspan="2" style="font-size:0.8rem;color:var(--text-muted)">Session data is isolated per instance. Auth tokens (auth.json) are globally shared across all instances.</td></tr>
         </tfoot>
     </table>
 </div>

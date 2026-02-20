@@ -146,11 +146,11 @@ func (m *Manager) ContainerMountsForInstance(instanceID string) ([]ContainerMoun
 		return nil, fmt.Errorf("mkdir instance data dir: %w", err)
 	}
 
+	// Ensure global auth.json exists (for bind mount)
 	globalAuth := filepath.Join(m.rootDir, DirOpenCodeData, "auth.json")
-	instAuth := filepath.Join(instDataDir, "auth.json")
-	if _, err := os.Stat(instAuth); os.IsNotExist(err) {
-		if data, readErr := os.ReadFile(globalAuth); readErr == nil {
-			_ = os.WriteFile(instAuth, data, 0600)
+	if _, err := os.Stat(globalAuth); os.IsNotExist(err) {
+		if err := os.WriteFile(globalAuth, []byte("{}\n"), 0600); err != nil {
+			return nil, fmt.Errorf("create auth.json: %w", err)
 		}
 	}
 
@@ -169,6 +169,11 @@ func (m *Manager) ContainerMountsForInstance(instanceID string) ([]ContainerMoun
 		{
 			HostPath:      hostInstDataDir,
 			ContainerPath: "/root/.local/share/opencode",
+		},
+		{
+			// Global auth.json shared across all instances
+			HostPath:      filepath.Join(root, DirOpenCodeData, "auth.json"),
+			ContainerPath: "/root/.local/share/opencode/auth.json",
 		},
 		{
 			HostPath:      filepath.Join(root, DirDotOpenCode),
