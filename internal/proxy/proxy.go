@@ -196,6 +196,24 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
     _cl.call(this);
     if (this === localStorage) sync();
   };
+
+  // Close old instance Web UI tabs when a new instance is opened
+  if (typeof BroadcastChannel !== "undefined") {
+    var ch = new BroadcastChannel("_cc_instance");
+    ch.postMessage({ type: "activate", id: ID });
+    ch.onmessage = function(e) {
+      if (e.data && e.data.type === "activate" && e.data.id !== ID) {
+        ch.close();
+        if (window.opener || window.history.length <= 1) {
+          window.close();
+        }
+        // window.close() may be blocked if not opened via script;
+        // replace the page with a redirect to dashboard
+        document.title = "Redirecting...";
+        location.replace("/");
+      }
+    };
+  }
 })();
 `
 
