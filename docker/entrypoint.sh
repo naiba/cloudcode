@@ -15,9 +15,10 @@ if [ -n "$GH_TOKEN" ]; then
 fi
 
 # Config files are bind-mounted by the management platform:
-#   /root/.config/opencode/      ← opencode.json, oh-my-opencode.json, skills/, commands/, etc.
-#   /root/.local/share/opencode/ ← auth.json
-#   /root/.opencode/             ← package.json
+#   /root/.config/opencode/           ← opencode.json, oh-my-opencode.json, skills/, commands/, etc.
+#   /root/.local/share/opencode/      ← session data (per-instance)
+#   /root/.local/share/opencode/auth.json ← auth tokens (global, shared across all instances)
+#   /root/.opencode/                  ← package.json
 
 if [ -f /root/.config/opencode/opencode.json ]; then
     echo "[*] Global opencode config detected"

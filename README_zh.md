@@ -53,8 +53,8 @@ docker compose up -d
 | 宿主机路径 | 容器内路径 | 范围 | 内容 |
 |---|---|---|---|
 | `data/config/opencode/` | `/root/.config/opencode/` | 全局 | `opencode.jsonc`、`AGENTS.md`、`package.json`、commands/、agents/、skills/、plugins/ |
-| `data/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | 按实例 | Session 数据、数据库 |
-| `data/config/opencode-data/` | — | 全局 | `auth.json`（首次启动时复制到各实例） |
+| `data/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | 按实例 | Session 数据、数据库（不含 auth.json） |
+| `data/config/opencode-data/auth.json` | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
 | `data/config/dot-opencode/` | `/root/.opencode/` | 全局 | `package.json` |
 | `data/config/agents-skills/` | `/root/.agents/skills/` | 全局 | 通过 [skills.sh](https://skills.sh) 安装的技能 |
 

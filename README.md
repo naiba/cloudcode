@@ -53,8 +53,8 @@ Global config is managed through the Settings page and bind-mounted into all con
 | Host Path | Container Path | Scope | Contents |
 |---|---|---|---|
 | `data/config/opencode/` | `/root/.config/opencode/` | Global | `opencode.jsonc`, `AGENTS.md`, `package.json`, commands/, agents/, skills/, plugins/ |
-| `data/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | Per-instance | Session data, databases |
-| `data/config/opencode-data/` | — | Global | `auth.json` (copied to each instance on first start) |
+| `data/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | Per-instance | Session data, databases (excludes auth.json) |
+| `data/config/opencode-data/auth.json` | `/root/.local/share/opencode/auth.json` | Global | Auth tokens (shared across all instances) |
 | `data/config/dot-opencode/` | `/root/.opencode/` | Global | `package.json` |
 | `data/config/agents-skills/` | `/root/.agents/skills/` | Global | Skills installed via [skills.sh](https://skills.sh) |
 

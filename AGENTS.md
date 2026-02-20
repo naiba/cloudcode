@@ -102,7 +102,7 @@ _ = h.store.Update(inst)
 - 网络：自建 bridge 网络 `cloudcode-net`
 - 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.opencode/`、`/root/.agents/skills/`
 - Session 数据按实例隔离：`{dataDir}/config/instances/{id}/opencode-data/` → `/root/.local/share/opencode/`
-- `auth.json` 全局共享，首次创建实例时从 `{dataDir}/config/opencode-data/auth.json` 复制到实例目录
+- `auth.json` 全局共享，直接 bind mount 到所有实例的 `/root/.local/share/opencode/auth.json`
 - 容器未开启 TTY 模式（`Tty: false`），因此 `ContainerLogs` 返回的是 Docker multiplexed stream（每条日志前有 8 字节二进制 header 标识 stdout/stderr）。读取日志时**必须**使用 `stdcopy.StdCopy`（`github.com/moby/moby/api/pkg/stdcopy`）解码，否则输出会有乱码前缀
 - 镜像不存在时自动 `docker pull`，永远不在应用内本地构建镜像
 - `ContainerMountsForInstance(instanceID)` 按实例生成 mount 列表，session 数据隔离
@@ -139,8 +139,8 @@ _ = h.store.Update(inst)
 | 宿主机路径 | 容器内路径 | 范围 | 内容 |
 |---|---|---|---|
 | `{dataDir}/config/opencode/` | `/root/.config/opencode/` | 全局 | opencode.jsonc, AGENTS.md, package.json, commands/, agents/, skills/, plugins/ |
-| `{dataDir}/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | 按实例 | session 数据、数据库 |
-| `{dataDir}/config/opencode-data/` | — | 全局 | auth.json（首次启动时复制到各实例） |
+| `{dataDir}/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | 按实例 | session 数据、数据库（不含 auth.json） |
+| `{dataDir}/config/opencode-data/auth.json` | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
 | `{dataDir}/config/dot-opencode/` | `/root/.opencode/` | 全局 | package.json |
 | `{dataDir}/config/agents-skills/` | `/root/.agents/skills/` | 全局 | skills.sh 安装的技能 |
 
