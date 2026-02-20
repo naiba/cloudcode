@@ -260,6 +260,7 @@ body > * { position: relative; z-index: 1; }
     color: #fff;
 }
 .btn-success:hover {
+    background: var(--success);
     filter: brightness(1.1);
     color: #fff;
     box-shadow: 0 2px 8px rgba(52,211,153,0.25);
@@ -270,6 +271,7 @@ body > * { position: relative; z-index: 1; }
     color: #000;
 }
 .btn-warning:hover {
+    background: var(--warning);
     filter: brightness(1.08);
     color: #000;
     box-shadow: 0 2px 8px rgba(251,191,36,0.25);
