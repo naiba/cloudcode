@@ -43,21 +43,21 @@
         <button hx-post="/instances/{{.Instance.ID}}/stop"
                 hx-target="#instance-actions" hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="btn btn-warning"><span class="htmx-indicator spinner"></span>Stop</button>
+                class="btn btn-warning"><span class="spinner"></span>Stop</button>
         <button hx-post="/instances/{{.Instance.ID}}/restart"
                 hx-target="#instance-actions" hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="btn btn-secondary"><span class="htmx-indicator spinner"></span>Restart</button>
+                class="btn btn-secondary"><span class="spinner"></span>Restart</button>
         {{else}}
         <button hx-post="/instances/{{.Instance.ID}}/start"
                 hx-target="#instance-actions" hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="btn btn-primary"><span class="htmx-indicator spinner"></span>Start</button>
+                class="btn btn-primary"><span class="spinner"></span>Start</button>
         {{end}}
         <button hx-delete="/instances/{{.Instance.ID}}"
                 hx-disabled-elt="this"
                 hx-confirm="Are you sure you want to delete this instance? This will permanently destroy the container and its data."
-                class="btn btn-danger"><span class="htmx-indicator spinner"></span>Delete Instance</button>
+                class="btn btn-danger"><span class="spinner"></span>Delete Instance</button>
     </div>
 </div>
 

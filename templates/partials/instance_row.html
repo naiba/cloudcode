@@ -16,18 +16,18 @@
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="btn btn-sm btn-warning"><span class="htmx-indicator spinner"></span>Stop</button>
+                class="btn btn-sm btn-warning"><span class="spinner"></span>Stop</button>
         <button hx-post="/instances/{{.ID}}/restart"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="btn btn-sm btn-secondary"><span class="htmx-indicator spinner"></span>Restart</button>
+                class="btn btn-sm btn-secondary"><span class="spinner"></span>Restart</button>
         {{else if or (eq .Status "stopped") (eq .Status "exited") (eq .Status "created") (eq .Status "error")}}
         <button hx-post="/instances/{{.ID}}/start"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="btn btn-sm btn-primary"><span class="htmx-indicator spinner"></span>Start</button>
+                class="btn btn-sm btn-primary"><span class="spinner"></span>Start</button>
         {{end}}
         <button onclick="openLogs('{{.ID}}')"
                 class="btn btn-sm btn-secondary">Logs</button>
@@ -36,7 +36,7 @@
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
                 hx-confirm="Are you sure you want to delete instance '{{.Name}}'? This will destroy the container."
-                class="btn btn-sm btn-danger"><span class="htmx-indicator spinner"></span>Delete</button>
+                class="btn btn-sm btn-danger"><span class="spinner"></span>Delete</button>
     </td>
 </tr>
 {{end}}
