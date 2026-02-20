@@ -4,7 +4,7 @@
     <a href="/" class="btn btn-secondary">Back</a>
 </div>
 
-<form hx-post="/instances" hx-swap="none" class="form card" style="margin:0 auto">
+<form hx-post="/instances" hx-swap="none" hx-disabled-elt="find button[type='submit']" class="form card" style="margin:0 auto">
     <div class="form-section">
         <h2>Basic Info</h2>
         <div class="form-group">
@@ -17,7 +17,7 @@
     </div>
 
     <div class="form-actions">
-        <button type="submit" class="btn btn-primary">Create & Start Instance</button>
+        <button type="submit" class="btn btn-primary"><span class="spinner"></span>Create & Start Instance</button>
         <a href="/" class="btn btn-secondary">Cancel</a>
     </div>
 </form>

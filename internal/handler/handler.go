@@ -139,9 +139,8 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sync status with Docker
 	for _, inst := range instances {
-		if inst.ContainerID != "" {
+		if inst.ContainerID != "" && h.docker != nil {
 			status, err := h.docker.ContainerStatus(r.Context(), inst.ContainerID)
 			if err == nil && status != inst.Status {
 				inst.Status = status
@@ -203,19 +202,21 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	containerID, err := h.docker.CreateContainer(r.Context(), inst)
-	if err != nil {
-		log.Printf("Error creating container for %s: %v", inst.ID, err)
-		inst.Status = "error"
-		inst.ErrorMsg = err.Error()
-		_ = h.store.Update(inst)
-	} else {
-		inst.ContainerID = containerID
-		inst.Status = "running"
-		_ = h.store.Update(inst)
+	if h.docker != nil {
+		containerID, err := h.docker.CreateContainer(r.Context(), inst)
+		if err != nil {
+			log.Printf("Error creating container for %s: %v", inst.ID, err)
+			inst.Status = "error"
+			inst.ErrorMsg = err.Error()
+			_ = h.store.Update(inst)
+		} else {
+			inst.ContainerID = containerID
+			inst.Status = "running"
+			_ = h.store.Update(inst)
 
-		if err := h.proxy.Register(inst.ID, inst.Port); err != nil {
-			log.Printf("Error registering proxy for %s: %v", inst.ID, err)
+			if err := h.proxy.Register(inst.ID, inst.Port); err != nil {
+				log.Printf("Error registering proxy for %s: %v", inst.ID, err)
+			}
 		}
 	}
 
@@ -231,8 +232,7 @@ func (h *Handler) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sync status
-	if inst.ContainerID != "" {
+	if inst.ContainerID != "" && h.docker != nil {
 		if status, err := h.docker.ContainerStatus(r.Context(), inst.ContainerID); err == nil {
 			inst.Status = status
 			_ = h.store.Update(inst)
@@ -254,8 +254,7 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove container
-	if inst.ContainerID != "" {
+	if inst.ContainerID != "" && h.docker != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		if err := h.docker.RemoveContainer(ctx, inst.ContainerID); err != nil {
@@ -288,6 +287,11 @@ func (h *Handler) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 	inst, err := h.store.Get(id)
 	if err != nil {
 		http.Error(w, "Instance not found", http.StatusNotFound)
+		return
+	}
+
+	if h.docker == nil {
+		respondError(w, "Docker is not available")
 		return
 	}
 
@@ -327,7 +331,7 @@ func (h *Handler) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if inst.ContainerID != "" {
+	if inst.ContainerID != "" && h.docker != nil {
 		if err := h.docker.StopContainer(r.Context(), inst.ContainerID); err != nil {
 			respondError(w, "Failed to stop container: "+err.Error())
 			return
@@ -349,7 +353,7 @@ func (h *Handler) handleRestartInstance(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if inst.ContainerID != "" {
+	if inst.ContainerID != "" && h.docker != nil {
 		_ = h.docker.StopContainer(r.Context(), inst.ContainerID)
 		if err := h.docker.StartContainer(r.Context(), inst.ContainerID); err != nil {
 			respondError(w, "Failed to restart container: "+err.Error())
@@ -423,12 +427,13 @@ func (h *Handler) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	inst, err := h.store.Get(id)
 	if err != nil {
-		http.Error(w, "Instance not found", http.StatusNotFound)
+		// Instance was deleted — return empty body so hx-swap="outerHTML" removes the row silently
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	oldStatus := inst.Status
-	if inst.ContainerID != "" {
+	if inst.ContainerID != "" && h.docker != nil {
 		if status, err := h.docker.ContainerStatus(r.Context(), inst.ContainerID); err == nil {
 			inst.Status = status
 			if status != oldStatus {
