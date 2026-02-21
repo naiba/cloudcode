@@ -47,6 +47,9 @@ RUN bun install -g opencode-ai@latest
 # Install Oh My OpenCode (as opencode plugin)
 RUN bun install -g oh-my-opencode@latest
 
+# Install OpenSpec (spec-driven development for AI coding assistants)
+RUN bun install -g @fission-ai/openspec@latest
+
 # Create workspace directory
 RUN mkdir -p /workspace /root/.opencode /root/.config/opencode /root/.local/share/opencode /root/.agents/skills
 
