@@ -47,11 +47,21 @@ export const CloudCodeTelegram = async (input: any) => {
   const getSession = async (sessionID: string) => {
     if (!client) return null
     try {
-      const res = await client.session.get({ sessionID })
+      const res = await client.session.get({ path: { id: sessionID } })
       return res?.data ?? res ?? null
     } catch {
       return null
     }
+  }
+  const getSessionWithTitle = async (sessionID: string, retries = 5, delay = 2000): Promise<any> => {
+    let session = await getSession(sessionID)
+    if (!session) return null
+    for (let i = 0; i < retries && !session.title; i++) {
+      await new Promise((r) => setTimeout(r, delay))
+      session = await getSession(sessionID)
+      if (!session) return null
+    }
+    return session
   }
   const isChildSession = (session: any): boolean => {
     if (session.parentID || session.parent_id) return true
@@ -72,7 +82,7 @@ export const CloudCodeTelegram = async (input: any) => {
   const getMessages = async (sessionID: string) => {
     if (!client) return []
     try {
-      const res = await client.session.messages({ sessionID })
+      const res = await client.session.messages({ path: { id: sessionID } })
       const list = res?.data ?? res
       return Array.isArray(list) ? list : []
     } catch {
@@ -90,7 +100,7 @@ export const CloudCodeTelegram = async (input: any) => {
         if (!sessionID) return
 
         try {
-          const session = await getSession(sessionID)
+          const session = await getSessionWithTitle(sessionID)
           if (!session || isChildSession(session)) return
 
           const title = session.title || ""
