@@ -26,6 +26,7 @@ const (
 	defaultImage    = "ghcr.io/naiba/cloudcode-base:latest"
 	networkName     = "cloudcode-net"
 	containerPrefix = "cloudcode-"
+	volumePrefix    = "cloudcode-home-"
 )
 
 type Manager struct {
@@ -113,7 +114,15 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 		}
 	}
 
-	var mounts []mount.Mount
+	// Named volume for /root (persists across container recreations)
+	homeVolume := volumePrefix + inst.ID
+	mounts := []mount.Mount{
+		{
+			Type:   mount.TypeVolume,
+			Source: homeVolume,
+			Target: "/root",
+		},
+	}
 	if m.config != nil {
 		cms, err := m.config.ContainerMountsForInstance(inst.ID)
 		if err != nil {
@@ -182,10 +191,24 @@ func (m *Manager) StartContainer(ctx context.Context, containerID string) error 
 
 func (m *Manager) RemoveContainer(ctx context.Context, containerID string) error {
 	_, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
-		Force:         true,
-		RemoveVolumes: true,
+		Force: true,
 	})
 	return err
+}
+
+// RemoveContainerAndVolume removes the container and its named home volume.
+// Used when permanently deleting an instance.
+func (m *Manager) RemoveContainerAndVolume(ctx context.Context, containerID, instanceID string) error {
+	_, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
+		Force: true,
+	})
+	if err != nil {
+		return err
+	}
+	// Best-effort removal of the named volume
+	volName := volumePrefix + instanceID
+	_, _ = m.cli.VolumeRemove(ctx, volName, client.VolumeRemoveOptions{Force: true})
+	return nil
 }
 
 func (m *Manager) ContainerLogsStream(ctx context.Context, containerID string, tail string) (io.ReadCloser, error) {

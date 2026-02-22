@@ -257,7 +257,7 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	if inst.ContainerID != "" && h.docker != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		if err := h.docker.RemoveContainer(ctx, inst.ContainerID); err != nil {
+		if err := h.docker.RemoveContainerAndVolume(ctx, inst.ContainerID, id); err != nil {
 			log.Printf("Error removing container for %s: %v", id, err)
 		}
 	}
@@ -445,21 +445,23 @@ func (h *Handler) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldStatus := inst.Status
+	// The frontend passes its currently displayed status via ?s= query param.
+	// We compare against that instead of the DB status so the frontend always
+	// converges to the true state (fixes restart showing stale "removed").
+	clientStatus := r.URL.Query().Get("s")
 	if inst.ContainerID != "" && h.docker != nil {
 		if status, err := h.docker.ContainerStatus(r.Context(), inst.ContainerID); err == nil {
-			inst.Status = status
-			if status != oldStatus {
+			if status != inst.Status {
+				inst.Status = status
 				_ = h.store.Update(inst)
 			}
 		}
 	}
 
-	if inst.Status == oldStatus {
+	if inst.Status == clientStatus {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	h.renderPartial(w, "instance_row", inst)
 }
 
