@@ -46,10 +46,13 @@ export const CloudCodeTelegram = async (input: any) => {
 
   const getSession = async (sessionID: string) => {
     if (!client) return null
-    const res = await client.session.get({ path: { id: sessionID } })
-    return res?.data ?? res ?? null
+    try {
+      const res = await client.session.get({ sessionID })
+      return res?.data ?? res ?? null
+    } catch {
+      return null
+    }
   }
-
   const isChildSession = (session: any): boolean => {
     if (session.parentID || session.parent_id) return true
     const title = session.title || ""
@@ -57,11 +60,24 @@ export const CloudCodeTelegram = async (input: any) => {
     return false
   }
 
+  const shouldSkipSession = async (sessionID: string | undefined): Promise<boolean> => {
+    if (!sessionID) return false
+    try {
+      const session = await getSession(sessionID)
+      return session ? isChildSession(session) : true
+    } catch {
+      return true
+    }
+  }
   const getMessages = async (sessionID: string) => {
     if (!client) return []
-    const res = await client.session.messages({ path: { id: sessionID } })
-    const list = res?.data ?? res
-    return Array.isArray(list) ? list : []
+    try {
+      const res = await client.session.messages({ sessionID })
+      const list = res?.data ?? res
+      return Array.isArray(list) ? list : []
+    } catch {
+      return []
+    }
   }
 
   return {
@@ -118,13 +134,7 @@ export const CloudCodeTelegram = async (input: any) => {
       if (event.type === "session.error") {
         const p = event.properties
         const sessionID = p?.sessionID
-
-        if (sessionID) {
-          try {
-            const session = await getSession(sessionID)
-            if (session && isChildSession(session)) return
-          } catch {}
-        }
+        if (await shouldSkipSession(sessionID)) return
 
         const errorName = p?.error?.name || "Unknown"
         const errorMsg = p?.error?.data?.message || p?.error?.data?.providerID || ""
@@ -140,13 +150,7 @@ export const CloudCodeTelegram = async (input: any) => {
       if (event.type === "permission.asked") {
         const p = event.properties
         const sessionID = p?.sessionID
-
-        if (sessionID) {
-          try {
-            const session = await getSession(sessionID)
-            if (session && isChildSession(session)) return
-          } catch {}
-        }
+        if (await shouldSkipSession(sessionID)) return
 
         const permission = p?.permission || "unknown"
         const metadata = p?.metadata || {}
@@ -164,13 +168,7 @@ export const CloudCodeTelegram = async (input: any) => {
       if (event.type === "question.asked") {
         const p = event.properties
         const sessionID = p?.sessionID
-
-        if (sessionID) {
-          try {
-            const session = await getSession(sessionID)
-            if (session && isChildSession(session)) return
-          } catch {}
-        }
+        if (await shouldSkipSession(sessionID)) return
 
         const questions = p?.questions || []
         const lines = [`❓ *Input Required*`]
