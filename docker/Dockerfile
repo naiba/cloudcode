@@ -5,16 +5,21 @@ ARG TARGETARCH
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install base system dependencies
+# Install base system dependencies and dev tools (stable layer, cached aggressively)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
     curl \
     git \
-    unzip \
-    wget \
     jq \
+    less \
+    make \
     openssh-client \
-    && rm -rf /var/lib/apt/lists/*
+    procps \
+    tree \
+    unzip \
+    vim-tiny \
+    wget
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -23,8 +28,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
     | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update \
-    && apt-get install -y gh \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y gh
 
 # Install Go
 ENV GO_VERSION=1.23.6
@@ -34,8 +38,7 @@ ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 
 # Install Node.js (LTS) via NodeSource
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y nodejs
 
 # Install Bun
 RUN curl -fsSL https://bun.sh/install | bash
