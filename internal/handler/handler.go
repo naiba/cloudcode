@@ -353,13 +353,26 @@ func (h *Handler) handleRestartInstance(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if inst.ContainerID != "" && h.docker != nil {
-		_ = h.docker.StopContainer(r.Context(), inst.ContainerID)
-		if err := h.docker.StartContainer(r.Context(), inst.ContainerID); err != nil {
-			respondError(w, "Failed to restart container: "+err.Error())
-			return
-		}
+	if h.docker == nil {
+		respondError(w, "Docker is not available")
+		return
 	}
+
+	// Remove old container and recreate to trigger entrypoint (updates dependencies)
+	if inst.ContainerID != "" {
+		_ = h.docker.StopContainer(r.Context(), inst.ContainerID)
+		_ = h.docker.RemoveContainer(r.Context(), inst.ContainerID)
+	}
+
+	containerID, err := h.docker.CreateContainer(r.Context(), inst)
+	if err != nil {
+		inst.Status = "error"
+		inst.ErrorMsg = err.Error()
+		_ = h.store.Update(inst)
+		respondError(w, "Failed to restart container: "+err.Error())
+		return
+	}
+	inst.ContainerID = containerID
 
 	inst.Status = "running"
 	_ = h.store.Update(inst)
