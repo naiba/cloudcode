@@ -13,7 +13,7 @@ CloudCode 是一个 OpenCode 实例管理平台。Go 后端 + Docker 容器编�
 ```
 main.go                     入口，加载模板，启动 HTTP server
 internal/
-  config/config.go          配置文件管理（读写宿主机配置，生成容器 bind mount，按实例隔离 session）
+  config/config.go          配置文件管理（读写宿主机配置，生成容器 bind mount）
   config/plugins/            embed 的内置 plugin（如 _cloudcode-telegram.ts），启动时写入 plugins/
   docker/manager.go         Docker 容器生命周期（创建/启动/停止/删除）
   handler/handler.go        所有 HTTP handler（页面渲染 + HTMX API）
@@ -101,11 +101,11 @@ _ = h.store.Update(inst)
 - 容器命名规则：`cloudcode-{instanceID}`
 - 网络：自建 bridge 网络 `cloudcode-net`
 - 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.opencode/`、`/root/.agents/skills/`
-- Session 数据按实例隔离：`{dataDir}/config/instances/{id}/opencode-data/` → `/root/.local/share/opencode/`
+- 每个实例使用 Docker named volume (`cloudcode-home-{id}`) 挂载 `/root`，持久化工作目录（clone 的代码、session 数据等）
 - `auth.json` 全局共享，直接 bind mount 到所有实例的 `/root/.local/share/opencode/auth.json`
-- 容器未开启 TTY 模式（`Tty: false`），因此 `ContainerLogs` 返回的是 Docker multiplexed stream（每条日志前有 8 字节二进制 header 标识 stdout/stderr）。读取日志时**必须**使用 `stdcopy.StdCopy`（`github.com/moby/moby/api/pkg/stdcopy`）解码，否则输出会有乱码前缀
-- 镜像不存在时自动 `docker pull`，永远不在应用内本地构建镜像
-- `ContainerMountsForInstance(instanceID)` 按实例生成 mount 列表，session 数据隔离
+- Bind mount 子路径优先级高于父路径 volume，全局配置和 auth.json 会覆盖 volume 中的对应路径
+- Restart 通过删除容器并重建实现（volume 保留），触发 entrypoint 更新依赖
+- 删除实例时通过 `RemoveContainerAndVolume` 同时清理容器和 named volume
 
 ### 前端
 
@@ -136,13 +136,13 @@ _ = h.store.Update(inst)
 
 平台管理的 OpenCode 配置文件和目录：
 
-| 宿主机路径 | 容器内路径 | 范围 | 内容 |
+| 存储位置 | 容器内路径 | 范围 | 内容 |
 |---|---|---|---|
-| `{dataDir}/config/opencode/` | `/root/.config/opencode/` | 全局 | opencode.jsonc, AGENTS.md, package.json, commands/, agents/, skills/, plugins/ |
-| `{dataDir}/config/instances/{id}/opencode-data/` | `/root/.local/share/opencode/` | 按实例 | session 数据、数据库（不含 auth.json） |
-| `{dataDir}/config/opencode-data/auth.json` | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
-| `{dataDir}/config/dot-opencode/` | `/root/.opencode/` | 全局 | package.json |
-| `{dataDir}/config/agents-skills/` | `/root/.agents/skills/` | 全局 | skills.sh 安装的技能 |
+| `{dataDir}/config/opencode/` (bind mount) | `/root/.config/opencode/` | 全局 | opencode.jsonc, AGENTS.md, package.json, commands/, agents/, skills/, plugins/ |
+| `{dataDir}/config/opencode-data/auth.json` (bind mount) | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
+| `{dataDir}/config/dot-opencode/` (bind mount) | `/root/.opencode/` | 全局 | package.json |
+| `{dataDir}/config/agents-skills/` (bind mount) | `/root/.agents/skills/` | 全局 | skills.sh 安装的技能 |
+| `cloudcode-home-{id}` (named volume) | `/root` | 按实例 | 工作目录、clone 的代码、session 数据、数据库等 |
 
 子目录：`commands/`、`agents/`、`skills/`、`plugins/` — 通过 Settings 页面在线管理。
 

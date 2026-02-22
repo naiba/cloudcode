@@ -141,11 +141,6 @@ func (m *Manager) WriteFile(relPath string, content string) error {
 }
 
 func (m *Manager) ContainerMountsForInstance(instanceID string) ([]ContainerMount, error) {
-	instDataDir := filepath.Join(m.rootDir, "instances", instanceID, DirOpenCodeData)
-	if err := os.MkdirAll(instDataDir, 0750); err != nil {
-		return nil, fmt.Errorf("mkdir instance data dir: %w", err)
-	}
-
 	// Ensure global auth.json exists (for bind mount)
 	globalAuth := filepath.Join(m.rootDir, DirOpenCodeData, "auth.json")
 	if _, err := os.Stat(globalAuth); os.IsNotExist(err) {
@@ -153,22 +148,17 @@ func (m *Manager) ContainerMountsForInstance(instanceID string) ([]ContainerMoun
 			return nil, fmt.Errorf("create auth.json: %w", err)
 		}
 	}
-
 	root := m.rootDir
-	hostInstDataDir := instDataDir
 	if m.hostRootDir != "" {
 		root = m.hostRootDir
-		hostInstDataDir = filepath.Join(m.hostRootDir, "instances", instanceID, DirOpenCodeData)
 	}
 
+	// Session data lives in the named volume (cloudcode-home-{id}) at /root.
+	// Only global configs and auth.json are bind-mounted.
 	return []ContainerMount{
 		{
 			HostPath:      filepath.Join(root, DirOpenCodeConfig),
 			ContainerPath: "/root/.config/opencode",
-		},
-		{
-			HostPath:      hostInstDataDir,
-			ContainerPath: "/root/.local/share/opencode",
 		},
 		{
 			// Global auth.json shared across all instances
