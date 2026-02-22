@@ -46,6 +46,7 @@ RUN bun install -g opencode-ai@latest
 
 # Install Oh My OpenCode (as opencode plugin)
 RUN bun install -g oh-my-opencode@latest
+RUN bun install -g oh-my-opencode-linux-arm64@latest || true
 
 # Install OpenSpec (spec-driven development for AI coding assistants)
 RUN bun install -g @fission-ai/openspec@latest

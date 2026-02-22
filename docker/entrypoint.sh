@@ -9,6 +9,7 @@ echo "  OpenCode version: $(opencode --version 2>/dev/null || echo 'unknown')"
 
 echo "[2/4] Updating Oh My OpenCode..."
 bun update -g oh-my-opencode@latest 2>/dev/null || echo "Warning: oh-my-opencode update failed, using existing version"
+bun update -g oh-my-opencode-linux-arm64@latest 2>/dev/null || echo "Warning: oh-my-opencode-linux-arm64 update failed, using existing version"
 
 echo "[3/4] Updating OpenSpec..."
 bun update -g @fission-ai/openspec@latest 2>/dev/null || echo "Warning: OpenSpec update failed, using existing version"
