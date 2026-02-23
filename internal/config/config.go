@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 //go:embed plugins/_cloudcode-telegram.ts
 var telegramPlugin []byte
+
+//go:embed plugins/_cloudcode-commit-rules.md
+var commitRules []byte
+const commitRulesFile = "_cloudcode-commit-rules.md"
 
 const (
 	DirOpenCodeConfig = "opencode"      // → /root/.config/opencode/
@@ -90,7 +95,92 @@ func (m *Manager) ensureDirs() error {
 		return fmt.Errorf("write telegram plugin: %w", err)
 	}
 
+	if err := m.ensureCommitRules(); err != nil {
+		return fmt.Errorf("ensure commit rules: %w", err)
+	}
+
 	return nil
+}
+
+// ensureCommitRules writes the commit attribution rules as a standalone
+// instruction file and ensures opencode.jsonc references it via the
+// "instructions" field. This avoids modifying AGENTS.md directly.
+func (m *Manager) ensureCommitRules() error {
+	// Write the standalone instruction file (overwrite every start, like telegram plugin)
+	rulesPath := filepath.Join(m.rootDir, DirOpenCodeConfig, commitRulesFile)
+	if err := os.WriteFile(rulesPath, commitRules, 0640); err != nil {
+		return fmt.Errorf("write commit rules: %w", err)
+	}
+
+	// Use absolute container path so opencode resolves it regardless of project dir
+	return m.ensureInstruction("/root/.config/opencode/" + commitRulesFile)
+}
+
+// ensureInstruction makes sure the given filename is listed in the
+// "instructions" array of opencode.jsonc. If the file doesn't exist or
+// has no instructions field, it is created/added. Existing content is
+// preserved; only the instructions array is patched.
+func (m *Manager) ensureInstruction(filename string) error {
+	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
+	raw, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read opencode.jsonc: %w", err)
+	}
+
+	content := string(raw)
+
+	// Quick check: already referenced?
+	if regexp.MustCompile(`["']` + regexp.QuoteMeta(filename) + `["']`).MatchString(content) {
+		return nil
+	}
+
+	// Strip JSONC comments for parsing, but preserve original for editing
+	stripped := stripJSONCComments(content)
+
+	var cfg map[string]any
+	if len(stripped) > 0 {
+		if err := json.Unmarshal([]byte(stripped), &cfg); err != nil {
+			// Malformed config; don't break it, just skip
+			return nil
+		}
+	} else {
+		cfg = make(map[string]any)
+	}
+
+	// Patch instructions array
+	var instructions []any
+	if existing, ok := cfg["instructions"]; ok {
+		if arr, ok := existing.([]any); ok {
+			instructions = arr
+		}
+	}
+	instructions = append(instructions, filename)
+	cfg["instructions"] = instructions
+
+	// Write back as formatted JSON (comments are lost, but this is a
+	// machine-managed global config, not a hand-crafted project config)
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal opencode.jsonc: %w", err)
+	}
+	return os.WriteFile(configPath, out, 0640)
+}
+
+// stripJSONCComments removes // and /* */ comments from JSONC content.
+func stripJSONCComments(s string) string {
+	// Remove single-line comments (not inside strings)
+	re := regexp.MustCompile(`(?m)^(\s*)//.*$`)
+	s = re.ReplaceAllString(s, "$1")
+	// Remove inline comments after values (simplistic but sufficient for config files)
+	re2 := regexp.MustCompile(`("[^"]*"|[^/])//.*$`)
+	s = re2.ReplaceAllString(s, "$1")
+	// Remove block comments
+	re3 := regexp.MustCompile(`(?s)/\*.*?\*/`)
+	s = re3.ReplaceAllString(s, "")
+	// Handle trailing commas before } or ]
+	re4 := regexp.MustCompile(`,\s*([}\]])`)
+	s = re4.ReplaceAllString(s, "$1")
+	return s
 }
 
 func (m *Manager) GetEnvVars() (map[string]string, error) {
