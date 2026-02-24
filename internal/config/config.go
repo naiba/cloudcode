@@ -12,9 +12,9 @@ import (
 //go:embed plugins/_cloudcode-telegram.ts
 var telegramPlugin []byte
 
-//go:embed plugins/_cloudcode-commit-rules.md
-var commitRules []byte
-const commitRulesFile = "_cloudcode-commit-rules.md"
+//go:embed plugins/_cloudcode-instructions.md
+var instructionsFile []byte
+const instructionsFileName = "_cloudcode-instructions.md"
 
 const (
 	DirOpenCodeConfig = "opencode"      // → /root/.config/opencode/
@@ -95,25 +95,30 @@ func (m *Manager) ensureDirs() error {
 		return fmt.Errorf("write telegram plugin: %w", err)
 	}
 
-	if err := m.ensureCommitRules(); err != nil {
-		return fmt.Errorf("ensure commit rules: %w", err)
+	if err := m.ensureInstructionsFile(); err != nil {
+		return fmt.Errorf("ensure instructions file: %w", err)
 	}
 
 	return nil
 }
 
-// ensureCommitRules writes the commit attribution rules as a standalone
+// ensureInstructionsFile writes the CloudCode instructions as a standalone
 // instruction file and ensures opencode.jsonc references it via the
 // "instructions" field. This avoids modifying AGENTS.md directly.
-func (m *Manager) ensureCommitRules() error {
+func (m *Manager) ensureInstructionsFile() error {
 	// Write the standalone instruction file (overwrite every start, like telegram plugin)
-	rulesPath := filepath.Join(m.rootDir, DirOpenCodeConfig, commitRulesFile)
-	if err := os.WriteFile(rulesPath, commitRules, 0640); err != nil {
-		return fmt.Errorf("write commit rules: %w", err)
+	path := filepath.Join(m.rootDir, DirOpenCodeConfig, instructionsFileName)
+	if err := os.WriteFile(path, instructionsFile, 0640); err != nil {
+		return fmt.Errorf("write instructions file: %w", err)
 	}
 
+	// Clean up legacy file and reference from previous versions
+	legacyName := "_cloudcode-commit-rules.md"
+	legacyPath := filepath.Join(m.rootDir, DirOpenCodeConfig, legacyName)
+	_ = os.Remove(legacyPath)
+	m.removeInstruction("/root/.config/opencode/" + legacyName)
 	// Use absolute container path so opencode resolves it regardless of project dir
-	return m.ensureInstruction("/root/.config/opencode/" + commitRulesFile)
+	return m.ensureInstruction("/root/.config/opencode/" + instructionsFileName)
 }
 
 // ensureInstruction makes sure the given filename is listed in the
@@ -164,6 +169,47 @@ func (m *Manager) ensureInstruction(filename string) error {
 		return fmt.Errorf("marshal opencode.jsonc: %w", err)
 	}
 	return os.WriteFile(configPath, out, 0640)
+}
+
+
+// removeInstruction removes a filename from the "instructions" array in
+// opencode.jsonc if present. Best-effort: errors are silently ignored.
+func (m *Manager) removeInstruction(filename string) {
+	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+
+	stripped := stripJSONCComments(string(raw))
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(stripped), &cfg); err != nil {
+		return
+	}
+
+	arr, ok := cfg["instructions"].([]any)
+	if !ok {
+		return
+	}
+
+	var filtered []any
+	for _, v := range arr {
+		if s, ok := v.(string); ok && s == filename {
+			continue
+		}
+		filtered = append(filtered, v)
+	}
+
+	if len(filtered) == len(arr) {
+		return // nothing removed
+	}
+
+	cfg["instructions"] = filtered
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(configPath, out, 0640)
 }
 
 // stripJSONCComments removes // and /* */ comments from JSONC content.
