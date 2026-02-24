@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tree \
     unzip \
     vim-tiny \
+    tmux \
     wget
 
 # Install GitHub CLI
