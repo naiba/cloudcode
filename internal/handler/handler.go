@@ -203,7 +203,8 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.docker != nil {
-		containerID, err := h.docker.CreateContainer(r.Context(), inst)
+		// 使用 background context：创建容器不能依赖 request context，否则用户关闭浏览器会中断操作
+		containerID, err := h.docker.CreateContainer(context.Background(), inst)
 		if err != nil {
 			log.Printf("Error creating container for %s: %v", inst.ID, err)
 			inst.Status = "error"
@@ -255,7 +256,8 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if inst.ContainerID != "" && h.docker != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		// 使用 background context：删除容器不能依赖 request context，否则用户关闭浏览器会中断操作
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := h.docker.RemoveContainerAndVolume(ctx, inst.ContainerID, id); err != nil {
 			log.Printf("Error removing container for %s: %v", id, err)
@@ -296,7 +298,8 @@ func (h *Handler) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if inst.ContainerID == "" {
-		containerID, err := h.docker.CreateContainer(r.Context(), inst)
+		// 使用 background context：创建容器不能依赖 request context，否则用户关闭浏览器会中断操作
+		containerID, err := h.docker.CreateContainer(context.Background(), inst)
 		if err != nil {
 			inst.Status = "error"
 			inst.ErrorMsg = err.Error()
@@ -306,7 +309,8 @@ func (h *Handler) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		inst.ContainerID = containerID
 	} else {
-		if err := h.docker.StartContainer(r.Context(), inst.ContainerID); err != nil {
+		// 使用 background context：启动容器不能依赖 request context，否则用户关闭浏览器会中断操作
+		if err := h.docker.StartContainer(context.Background(), inst.ContainerID); err != nil {
 			inst.Status = "error"
 			inst.ErrorMsg = err.Error()
 			_ = h.store.Update(inst)
@@ -332,7 +336,8 @@ func (h *Handler) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if inst.ContainerID != "" && h.docker != nil {
-		if err := h.docker.StopContainer(r.Context(), inst.ContainerID); err != nil {
+		// 使用 background context：停止容器不能依赖 request context，否则用户关闭浏览器会中断操作
+		if err := h.docker.StopContainer(context.Background(), inst.ContainerID); err != nil {
 			respondError(w, "Failed to stop container: "+err.Error())
 			return
 		}
@@ -360,11 +365,13 @@ func (h *Handler) handleRestartInstance(w http.ResponseWriter, r *http.Request) 
 
 	// Remove old container and recreate to trigger entrypoint (updates dependencies)
 	if inst.ContainerID != "" {
-		_ = h.docker.StopContainer(r.Context(), inst.ContainerID)
-		_ = h.docker.RemoveContainer(r.Context(), inst.ContainerID)
+		// 使用 background context：停止和删除容器不能依赖 request context，否则用户关闭浏览器会中断操作
+		_ = h.docker.StopContainer(context.Background(), inst.ContainerID)
+		_ = h.docker.RemoveContainer(context.Background(), inst.ContainerID)
 	}
 
-	containerID, err := h.docker.CreateContainer(r.Context(), inst)
+	// 使用 background context：创建容器不能依赖 request context，否则用户关闭浏览器会中断操作
+	containerID, err := h.docker.CreateContainer(context.Background(), inst)
 	if err != nil {
 		inst.Status = "error"
 		inst.ErrorMsg = err.Error()
