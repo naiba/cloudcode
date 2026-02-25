@@ -55,7 +55,7 @@ docker compose up -d
 | `data/config/opencode/` (bind mount) | `/root/.config/opencode/` | 全局 | `opencode.jsonc`、`AGENTS.md`、`package.json`、commands/、agents/、skills/、plugins/ |
 | `data/config/opencode-data/auth.json` (bind mount) | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
 | `data/config/dot-opencode/` (bind mount) | `/root/.opencode/` | 全局 | `package.json` |
-| `data/config/agents-skills/` (bind mount) | `/root/.agents/skills/` | 全局 | 通过 [skills.sh](https://skills.sh) 安装的技能 |
+| `data/config/agents-skills/` (bind mount) | `/root/.agents/` | 全局 | 通过 [skills.sh](https://skills.sh) 安装的技能和 lock file |
 | `cloudcode-home-{id}` (named volume) | `/root` | 按实例 | 工作目录、clone 的代码、session 数据、数据库等 |
 
 环境变量（如 `ANTHROPIC_API_KEY`、`GH_TOKEN`）在 Settings 中配置，自动注入所有容器。

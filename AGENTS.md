@@ -100,7 +100,7 @@ _ = h.store.Update(inst)
 - 使用 `github.com/moby/moby/client` 官方 SDK
 - 容器命名规则：`cloudcode-{instanceID}`
 - 网络：自建 bridge 网络 `cloudcode-net`
-- 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.opencode/`、`/root/.agents/skills/`
+- 全局配置通过 bind mount 注入到容器内 `/root/.config/opencode/`、`/root/.opencode/`、`/root/.agents/`
 - 每个实例使用 Docker named volume (`cloudcode-home-{id}`) 挂载 `/root`，持久化工作目录（clone 的代码、session 数据等）
 - `auth.json` 全局共享，直接 bind mount 到所有实例的 `/root/.local/share/opencode/auth.json`
 - Bind mount 子路径优先级高于父路径 volume，全局配置和 auth.json 会覆盖 volume 中的对应路径
@@ -141,7 +141,7 @@ _ = h.store.Update(inst)
 | `{dataDir}/config/opencode/` (bind mount) | `/root/.config/opencode/` | 全局 | opencode.jsonc, AGENTS.md, package.json, commands/, agents/, skills/, plugins/ |
 | `{dataDir}/config/opencode-data/auth.json` (bind mount) | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
 | `{dataDir}/config/dot-opencode/` (bind mount) | `/root/.opencode/` | 全局 | package.json |
-| `{dataDir}/config/agents-skills/` (bind mount) | `/root/.agents/skills/` | 全局 | skills.sh 安装的技能 |
+| `{dataDir}/config/agents-skills/` (bind mount) | `/root/.agents/` | 全局 | skills.sh 安装的技能和 lock file |
 | `cloudcode-home-{id}` (named volume) | `/root` | 按实例 | 工作目录、clone 的代码、session 数据、数据库等 |
 
 子目录：`commands/`、`agents/`、`skills/`、`plugins/` — 通过 Settings 页面在线管理。

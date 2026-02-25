@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,7 +21,7 @@ const (
 	DirOpenCodeConfig = "opencode"      // → /root/.config/opencode/
 	DirOpenCodeData   = "opencode-data" // → /root/.local/share/opencode/
 	DirDotOpenCode    = "dot-opencode"  // → /root/.opencode/
-	DirAgentsSkills   = "agents-skills" // → /root/.agents/skills/
+	DirAgentsSkills   = "agents-skills" // → /root/.agents/ (contains skills/ subdir and .skill-lock.json)
 	FileEnvVars       = "env.json"
 )
 
@@ -80,6 +81,8 @@ func (m *Manager) ensureDirs() error {
 		filepath.Join(m.rootDir, DirOpenCodeData),
 		filepath.Join(m.rootDir, DirDotOpenCode),
 		filepath.Join(m.rootDir, DirAgentsSkills),
+		// skills.sh 安装的技能存放在 skills/ 子目录，.skill-lock.json 在父目录
+		filepath.Join(m.rootDir, DirAgentsSkills, "skills"),
 	}
 	for _, d := range OpenCodeConfigDirs {
 		dirs = append(dirs, filepath.Join(m.rootDir, DirOpenCodeConfig, d))
@@ -89,6 +92,10 @@ func (m *Manager) ensureDirs() error {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
+
+	// Migrate: before v0.5.0, skill dirs lived directly under agents-skills/.
+	// Now agents-skills/ maps to /root/.agents/, so skills must be in agents-skills/skills/.
+	m.migrateAgentsSkills()
 
 	pluginPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-telegram.ts")
 	if err := os.WriteFile(pluginPath, telegramPlugin, 0640); err != nil {
@@ -100,6 +107,38 @@ func (m *Manager) ensureDirs() error {
 	}
 
 	return nil
+}
+
+// migrateAgentsSkills moves skill directories from agents-skills/ to agents-skills/skills/.
+// Before v0.5.0, agents-skills/ was bind-mounted directly to /root/.agents/skills/.
+// Now it maps to /root/.agents/ so that .skill-lock.json is also shared globally.
+func (m *Manager) migrateAgentsSkills() {
+	parentDir := filepath.Join(m.rootDir, DirAgentsSkills)
+	skillsDir := filepath.Join(parentDir, "skills")
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		// Only migrate directories that contain SKILL.md (actual skills, not "skills" subdir itself)
+		if !e.IsDir() || e.Name() == "skills" {
+			continue
+		}
+		oldPath := filepath.Join(parentDir, e.Name())
+		skillMarker := filepath.Join(oldPath, "SKILL.md")
+		if _, err := os.Stat(skillMarker); err != nil {
+			continue
+		}
+		newPath := filepath.Join(skillsDir, e.Name())
+		if _, err := os.Stat(newPath); err == nil {
+			// Already exists in skills/ subdir, remove old copy
+			_ = os.RemoveAll(oldPath)
+			continue
+		}
+		if err := os.Rename(oldPath, newPath); err != nil {
+			log.Printf("Warning: failed to migrate skill %s: %v", e.Name(), err)
+		}
+	}
 }
 
 // ensureInstructionsFile writes the CloudCode instructions as a standalone
@@ -306,8 +345,9 @@ func (m *Manager) ContainerMountsForInstance(instanceID string) ([]ContainerMoun
 			ContainerPath: "/root/.opencode",
 		},
 		{
+			// 整个 .agents 目录：包含 skills/ 子目录和 .skill-lock.json（skills update -g 需要）
 			HostPath:      filepath.Join(root, DirAgentsSkills),
-			ContainerPath: "/root/.agents/skills",
+			ContainerPath: "/root/.agents",
 		},
 	}, nil
 }
@@ -376,7 +416,7 @@ type AgentsSkillInfo struct {
 }
 
 func (m *Manager) ListAgentsSkills() ([]AgentsSkillInfo, error) {
-	dirPath := filepath.Join(m.rootDir, DirAgentsSkills)
+	dirPath := filepath.Join(m.rootDir, DirAgentsSkills, "skills")
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -395,14 +435,14 @@ func (m *Manager) ListAgentsSkills() ([]AgentsSkillInfo, error) {
 		if _, err := os.Stat(absSkill); err == nil {
 			skills = append(skills, AgentsSkillInfo{
 				SkillName: e.Name(),
-				RelPath:   filepath.Join(DirAgentsSkills, skillFile),
+				RelPath:   filepath.Join(DirAgentsSkills, "skills", skillFile),
 			})
 		}
 	}
 	return skills, nil
 }
 
-// ReadAgentsSkillFile reads a file from the agents-skills/ directory.
+// ReadAgentsSkillFile reads a file from the agents-skills/skills/ directory.
 func (m *Manager) ReadAgentsSkillFile(relPath string) (string, error) {
 	p := filepath.Join(m.rootDir, relPath)
 	data, err := os.ReadFile(p)
@@ -415,9 +455,9 @@ func (m *Manager) ReadAgentsSkillFile(relPath string) (string, error) {
 	return string(data), nil
 }
 
-// DeleteAgentsSkill removes an entire skill directory from agents-skills/.
+// DeleteAgentsSkill removes an entire skill directory from agents-skills/skills/.
 func (m *Manager) DeleteAgentsSkill(skillName string) error {
-	p := filepath.Join(m.rootDir, DirAgentsSkills, skillName)
+	p := filepath.Join(m.rootDir, DirAgentsSkills, "skills", skillName)
 	return os.RemoveAll(p)
 }
 

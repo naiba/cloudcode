@@ -55,7 +55,7 @@ Global config is managed through the Settings page and bind-mounted into all con
 | `data/config/opencode/` (bind mount) | `/root/.config/opencode/` | Global | `opencode.jsonc`, `AGENTS.md`, `package.json`, commands/, agents/, skills/, plugins/ |
 | `data/config/opencode-data/auth.json` (bind mount) | `/root/.local/share/opencode/auth.json` | Global | Auth tokens (shared across all instances) |
 | `data/config/dot-opencode/` (bind mount) | `/root/.opencode/` | Global | `package.json` |
-| `data/config/agents-skills/` (bind mount) | `/root/.agents/skills/` | Global | Skills installed via [skills.sh](https://skills.sh) |
+| `data/config/agents-skills/` (bind mount) | `/root/.agents/` | Global | Skills installed via [skills.sh](https://skills.sh) and lock file |
 | `cloudcode-home-{id}` (named volume) | `/root` | Per-instance | Workspace, cloned repos, session data, databases |
 
 Environment variables (e.g. `ANTHROPIC_API_KEY`, `GH_TOKEN`) are configured in Settings and injected into all containers.

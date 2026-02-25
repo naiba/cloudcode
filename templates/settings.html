@@ -74,7 +74,7 @@
 
 <div class="card">
     <h2>Installed Skills (skills.sh)</h2>
-    <p class="hint">Skills installed via <code>bunx skills add</code> in containers. Shared across all instances. Mounted at <code>/root/.agents/skills/</code></p>
+    <p class="hint">Skills installed via <code>bunx skills add</code> in containers. Shared across all instances. Mounted at <code>/root/.agents/</code>. Auto-updated on container start.</p>
     {{if .AgentsSkills}}
     <div class="dir-file-list">
         {{range .AgentsSkills}}
@@ -104,7 +104,7 @@
             <tr><td class="mono">{{.ConfigDir}}/instances/{id}/opencode-data/</td><td class="mono">/root/.local/share/opencode/</td></tr>
             <tr><td class="mono">{{.ConfigDir}}/opencode-data/auth.json</td><td class="mono">/root/.local/share/opencode/auth.json</td></tr>
             <tr><td class="mono">{{.ConfigDir}}/dot-opencode/</td><td class="mono">/root/.opencode/</td></tr>
-            <tr><td class="mono">{{.ConfigDir}}/agents-skills/</td><td class="mono">/root/.agents/skills/</td></tr>
+            <tr><td class="mono">{{.ConfigDir}}/agents-skills/</td><td class="mono">/root/.agents/</td></tr>
         </tbody>
         <tfoot>
             <tr><td colspan="2" style="font-size:0.78rem;color:var(--text-muted)">Session data is isolated per instance. Auth tokens (auth.json) are globally shared across all instances.</td></tr>
