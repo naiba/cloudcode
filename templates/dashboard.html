@@ -6,27 +6,15 @@
 
 {{if not .Instances}}
 <div class="empty-state">
+    <svg class="empty-state-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
     <p>No instances yet. Create your first OpenCode instance to get started.</p>
     <a href="/instances/new" class="btn btn-primary">Create Instance</a>
 </div>
 {{else}}
-<div class="table-wrap">
-    <table class="table" id="instances-table">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Port</th>
-                <th>Created</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {{range .Instances}}
-            {{template "instance_row" .}}
-            {{end}}
-        </tbody>
-    </table>
+<div class="instance-grid">
+    {{range .Instances}}
+    {{template "instance_row" .}}
+    {{end}}
 </div>
 {{end}}
 

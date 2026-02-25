@@ -1,14 +1,20 @@
 {{define "instance_row"}}
-<tr id="instance-{{.ID}}" hx-get="/instances/{{.ID}}/status?s={{.Status}}" hx-trigger="every 10s" hx-swap="outerHTML" hx-indicator="find .status-indicator">
-    <td>
+<div id="instance-{{.ID}}" class="instance-card" hx-get="/instances/{{.ID}}/status?s={{.Status}}" hx-trigger="every 10s" hx-swap="outerHTML">
+    <div class="instance-card-header">
         <a href="/instances/{{.ID}}" class="instance-name">{{.Name}}</a>
-    </td>
-    <td>
         <span class="badge {{statusBadge .Status}}">{{.Status}}</span>
-    </td>
-    <td>{{.Port}}</td>
-    <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-    <td class="actions">
+    </div>
+    <div class="instance-card-body">
+        <div class="instance-card-meta">
+            <span class="instance-card-label">Port</span>
+            <span class="mono">{{.Port}}</span>
+        </div>
+        <div class="instance-card-meta">
+            <span class="instance-card-label">Created</span>
+            <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
+        </div>
+    </div>
+    <div class="instance-card-footer">
         {{if eq .Status "running"}}
         <a href="javascript:void(0)" onclick="switchInstance('{{.ID}}')" class="btn btn-sm btn-success">Open</a>
         <a href="/instances/{{.ID}}/terminal" target="_blank" class="btn btn-sm btn-secondary" title="Terminal">Terminal</a>
@@ -37,6 +43,6 @@
                 hx-disabled-elt="this"
                 hx-confirm="Are you sure you want to delete instance '{{.Name}}'? This will destroy the container."
                 class="btn btn-sm btn-danger"><span class="spinner"></span>Delete</button>
-    </td>
-</tr>
+    </div>
+</div>
 {{end}}
