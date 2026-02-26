@@ -6,11 +6,17 @@
  * 工作原理：
  * 1. 通过 experimental.chat.system.transform hook 拦截每次 LLM 调用的 system prompt
  * 2. system[] 实际是单元素数组（一个大字符串），对其做行级 diff 定位具体变化
- * 3. diff 前先用正则将已知的动态内容（日期/时间/数字等）替换为占位符，
- *    避免正常的时间戳变化触发误报
- * 4. 首次调用时发送 "开始监控" 报告，包含被替换的动态内容清单
- * 5. 后续调用做行级对比，仅对真正的结构性变化发送告警
- * 6. session 空闲时发送监控报告
+ * 3. 频繁变化检测（非首次变化即替换）：
+ *    - 首次调用记录基线，不做任何替换
+ *    - 后续调用逐行对比，发现变化行后 neutralize（日期/时间/数字→占位符）再比较
+ *    - neutralize 后相同 → 判定为"动态微变"（如时间戳更新），累计该行变化次数
+ *    - 变化次数达到阈值（DYNAMIC_CHANGE_THRESHOLD，默认2）后才开始替换该行为占位符版本
+ *    - 未达阈值的行保持原样，可能只是一次性变化
+ *    - neutralize 后仍不同 → 判定为"结构变化"，立即触发告警
+ * 4. 同一 session 内不同 agent（如 title vs sisyphus）使用 sessionID:modelID 复合 key 独立追踪
+ * 5. 同一 session 中同一行位置的动态替换达到阈值时只通知一次，避免重复告警
+ * 6. 首次调用时发送 "开始监控" 报告
+ * 7. session 空闲时发送监控总结报告
  *
  * 环境变量：
  * - CC_TELEGRAM_BOT_TOKEN: Telegram Bot API token
@@ -38,10 +44,16 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return (h >>> 0).toString(36)
   }
 
+  const debugLogPath = process.env.CC_WATCHDOG_DEBUG_LOG || ""
   const send = async (text: string) => {
     try {
-      // Telegram 单条消息上限 4096 字符，截断保护
       const safeText = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text
+      // 调试模式：写入文件以便验证通知内容
+      if (debugLogPath) {
+        const fs = await import("fs")
+        const ts = new Date().toISOString()
+        fs.appendFileSync(debugLogPath, `\n--- ${ts} ---\n${safeText}\n`)
+      }
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -50,83 +62,28 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     } catch {}
   }
 
-  // --- 动态内容替换 ---
-  // 每条规则: [正则, 占位符, 人类可读描述]
-  // 规则按从具体到通用排序，防止通用规则先吃掉具体模式
-  const DYNAMIC_PATTERNS: [RegExp, string, string][] = [
-    // omo-env 块中的日期: "Current date: Thu, Feb 26, 2026"
-    [
-      /Current date:\s*.+$/gm,
-      "Current date: {{DATE}}",
-      "omo-env 当前日期",
-    ],
-    // omo-env 块中的时间: "Current time: 04:37:54 AM"
-    [
-      /Current time:\s*.+$/gm,
-      "Current time: {{TIME}}",
-      "omo-env 当前时间",
-    ],
-    // omo-env 块中的时区: "Timezone: UTC"
-    [
-      /Timezone:\s*\S+/gm,
-      "Timezone: {{TZ}}",
-      "omo-env 时区",
-    ],
-    // omo-env 块中的语言: "Locale: en-US"
-    [
-      /Locale:\s*\S+/gm,
-      "Locale: {{LOCALE}}",
-      "omo-env 语言区域",
-    ],
-    // OpenCode 原生注入的日期: "Today's date: Thu Feb 26 2026"
-    [
-      /Today's date:\s*.+$/gm,
-      "Today's date: {{DATE}}",
-      "OpenCode 当前日期",
-    ],
-    // 模型标识行: "You are powered by the model named xxx. The exact model ID is xxx"
-    [
-      /You are powered by the model named .+$/gm,
-      "You are powered by the model named {{MODEL}}. The exact model ID is {{MODEL_ID}}",
-      "模型标识",
-    ],
-    // 精确模型ID: "The exact model ID is song/claude-opus-4-6"
-    [
-      /The exact model ID is \S+/gm,
-      "The exact model ID is {{MODEL_ID}}",
-      "精确模型 ID",
-    ],
-  ]
-
-  interface NormalizeResult {
-    text: string
-    replacements: { description: string; original: string }[]
-  }
-
-  /**
-   * 将已知的动态内容替换为占位符。
-   * 返回替换后的文本和被替换内容的清单。
-   */
-  const normalizeText = (rawText: string): NormalizeResult => {
-    let text = rawText
-    const replacements: { description: string; original: string }[] = []
-
-    for (const [pattern, placeholder, description] of DYNAMIC_PATTERNS) {
-      // 重置 lastIndex（因为用 /g 标志）
-      pattern.lastIndex = 0
-      const matches = text.match(pattern)
-      if (matches) {
-        for (const match of matches) {
-          // 相同描述只记录一次
-          if (!replacements.some((r) => r.description === description)) {
-            replacements.push({ description, original: match.trim() })
-          }
-        }
-        text = text.replace(pattern, placeholder)
-      }
-    }
-
-    return { text, replacements }
+  // --- 动态分析核心：将一行中的日期/时间/数字替换为通用占位符 ---
+  // 不使用静态规则列表，而是对任意行做通用的 neutralize 处理，
+  // 让 diff 对比自动发现哪些行只是日期/时间/数字发生了变化
+  const neutralizeLine = (line: string): string => {
+    return (
+      line
+        // 时间格式: 04:37:54 AM, 16:30:00, 4:37 PM 等
+        .replace(/\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?/g, "{{TIME}}")
+        // ISO 日期时间: 2026-02-26T04:37:54Z, 2026-02-26 04:37 等
+        .replace(/\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/g, "{{DATETIME}}")
+        // 日期格式: 2026-02-26, 02/26/2026, Feb 26 2026 等
+        .replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, "{{DATE}}")
+        .replace(/\d{1,2}[-/]\d{1,2}[-/]\d{4}/g, "{{DATE}}")
+        // 英文星期: Mon, Tue, Wed, ... Sunday, Monday ...
+        .replace(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(day|nesday|rsday|urday)?/gi, "{{DAY}}")
+        // 英文月份: Jan, Feb, ... January, February ...
+        .replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*/gi, "{{MONTH}}")
+        // 4位年份（独立出现）
+        .replace(/\b(19|20)\d{2}\b/g, "{{YEAR}}")
+        // 剩余的独立数字序列（兜底：捕获所有纯数字变化）
+        .replace(/\b\d+\b/g, "{{N}}")
+    )
   }
 
   // --- 行级 diff ---
@@ -143,13 +100,10 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     const newLines = newText.split("\n")
     const diffs: LineDiff[] = []
     const maxLen = Math.max(oldLines.length, newLines.length)
-
     for (let i = 0; i < maxLen; i++) {
       const oldLine = i < oldLines.length ? oldLines[i] : undefined
       const newLine = i < newLines.length ? newLines[i] : undefined
-
       if (oldLine === newLine) continue
-
       if (oldLine === undefined) {
         diffs.push({ type: "added", lineNum: i + 1, newLine })
       } else if (newLine === undefined) {
@@ -177,10 +131,8 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       types: new Set([diffs[0].type]),
       lines: [diffs[0]],
     }
-
     for (let i = 1; i < diffs.length; i++) {
       const diff = diffs[i]
-      // 连续行（间隔 ≤ 2 行）合并为同一区块
       if (diff.lineNum - current.endLine <= 2) {
         current.endLine = diff.lineNum
         current.types.add(diff.type)
@@ -204,17 +156,14 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       block.startLine === block.endLine
         ? `L${block.startLine}`
         : `L${block.startLine}-${block.endLine}`
-
     const typeLabels: string[] = []
     if (block.types.has("added")) typeLabels.push("新增")
     if (block.types.has("removed")) typeLabels.push("移除")
     if (block.types.has("changed")) typeLabels.push("修改")
-
     const previewLine = block.lines.find((l) => l.newLine || l.oldLine)
     const preview = previewLine
       ? truncate((previewLine.newLine ?? previewLine.oldLine ?? "").trim(), 120)
       : ""
-
     return `${range} [${typeLabels.join("+")}] ${preview}`
   }
 
@@ -223,63 +172,84 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return str.slice(0, maxLen) + "..."
   }
 
+  // Telegram Markdown (legacy) 模式只需转义 _ * ` [
+  // BUG GUARD: 不要过度转义，否则 model 名中的 - 会变成 \- 影响可读性
   const escapeMarkdown = (str: string): string => {
-    return str.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&")
+    return str.replace(/[_*`\[\]]/g, "\\$&")
   }
 
   // --- 状态存储 ---
-  // sessionNormalizedText: 上一次 normalize 后的文本（用于 diff）
-  const sessionNormalizedText: Map<string, string> = new Map()
-  const sessionFirstHash: Map<string, string> = new Map()
-  const sessionLastHash: Map<string, string> = new Map()
-  const sessionCallCount: Map<string, number> = new Map()
-  const sessionTotalDiffLines: Map<string, number> = new Map()
-  const sessionDiffSummary: Map<string, string[]> = new Map()
+
+  // 频繁变化判定阈值：某行累计变化达到此次数后才开始替换为占位符
+  // BUG GUARD: 阈值不能设为 1，否则退化为"首次变化即替换"，丧失一次性变化的容忍能力
+  const DYNAMIC_CHANGE_THRESHOLD = 2
+
+  // === 全局基线（按 modelID，跨 session 共享）===
+  // 同一个 model 的 prompt 结构基本一致，跨 session 只有日期/时间等动态内容会变
+  // 用全局基线来检测这些跨 session 的动态变化
+  const globalPrevRawLines: Map<string, string[]> = new Map()
+  const globalLineChangeCount: Map<string, Map<number, number>> = new Map()
+  const globalNotifiedDynamic: Map<string, Set<number>> = new Map()
+
+  // === Per-session 状态（用于 Report 统计）===
+  // trackKey = "sessionID:modelID"
+  const firstHashMap: Map<string, string> = new Map()
+  const lastHashMap: Map<string, string> = new Map()
+  const callCountMap: Map<string, number> = new Map()
+  const totalDiffLinesMap: Map<string, number> = new Map()
+  const diffSummaryMap: Map<string, string[]> = new Map()
+
+  // 用于结束报告：记录每个 session 涉及的所有 trackKey
+  const sessionTrackKeys: Map<string, Set<string>> = new Map()
   const reportedSessions: Set<string> = new Set()
-  // 已报告过的动态内容替换描述（相同模式全局只报告一次）
-  const reportedDynamicPatterns: Set<string> = new Set()
+
+  const buildTrackKey = (sessionID: string, modelID: string): string => {
+    return `${sessionID}:${modelID}`
+  }
 
   const sendSessionReport = async (sessionID: string) => {
-    if (reportedSessions.has(sessionID)) return
-    if (!sessionCallCount.has(sessionID)) return
-    reportedSessions.add(sessionID)
+    try {
+      if (reportedSessions.has(sessionID)) return
+      const trackKeys = sessionTrackKeys.get(sessionID)
+      if (!trackKeys || trackKeys.size === 0) return
+      reportedSessions.add(sessionID)
 
-    const calls = sessionCallCount.get(sessionID) || 0
-    const totalDiffLines = sessionTotalDiffLines.get(sessionID) || 0
-    const firstHash = sessionFirstHash.get(sessionID) || "?"
-    const lastHash = sessionLastHash.get(sessionID) || "?"
-    const drifted = firstHash !== lastHash
-    const summaries = sessionDiffSummary.get(sessionID) || []
+      const lines = [
+        `🐕 *Prompt Watchdog Report* ${tag}`,
+      ]
 
-    const statusEmoji = totalDiffLines === 0 ? "✅" : drifted ? "⚠️" : "🔄"
-    const statusText =
-      totalDiffLines === 0
-        ? "System prompt 无变化"
-        : drifted
-          ? `System prompt 发生漂移 (${totalDiffLines} 行变化)`
-          : `System prompt 有临时波动但最终一致`
+      // 按 agent 分别汇总
+      for (const key of trackKeys) {
+        const modelID = key.split(":").slice(1).join(":")
+        const calls = callCountMap.get(key) || 0
+        const totalDiffLines = totalDiffLinesMap.get(key) || 0
+        const firstHash = firstHashMap.get(key) || "?"
+        const lastHash = lastHashMap.get(key) || "?"
+        const drifted = firstHash !== lastHash
+        const summaries = diffSummaryMap.get(key) || []
+        const dynamicCount = globalLineChangeCount.get(modelID)?.size || 0
 
-    const lines = [
-      `🐕 *Prompt Watchdog Report*`,
-      `🖥 ${tag}`,
-      `📊 共 ${calls} 次 LLM 调用`,
-      `🔑 指纹: \`${firstHash}\` → \`${lastHash}\``,
-      `${statusEmoji} ${statusText}`,
-    ]
+        const statusEmoji = totalDiffLines === 0 && dynamicCount === 0 ? "✅" : drifted ? "⚠️" : "🔄"
+        const statusParts: string[] = []
+        if (totalDiffLines > 0) statusParts.push(`${totalDiffLines} 行结构变化`)
+        if (dynamicCount > 0) statusParts.push(`${dynamicCount} 行动态过滤`)
+        const statusText = statusParts.length > 0 ? statusParts.join(", ") : "无变化"
 
-    if (summaries.length > 0) {
-      lines.push(``)
-      lines.push(`📝 *变化摘要:*`)
-      const shown = summaries.slice(-10)
-      for (const s of shown) {
-        lines.push(`• ${escapeMarkdown(s)}`)
+        lines.push(`${statusEmoji} ${escapeMarkdown(modelID)} ×${calls} ${drifted ? `\'${firstHash}\'→\'${lastHash}\'` : `\'${firstHash}\'`} ${statusText}`)
+
+        if (summaries.length > 0) {
+          const shown = summaries.slice(-3)
+          for (const s of shown) {
+            lines.push(`  • ${escapeMarkdown(s)}`)
+          }
+          if (summaries.length > 3) {
+            lines.push(`  ... 及其他 ${summaries.length - 3} 处`)
+          }
+        }
       }
-      if (summaries.length > 10) {
-        lines.push(`... 及其他 ${summaries.length - 10} 处`)
-      }
-    }
 
-    await send(lines.join("\n"))
+      await send(lines.join("\n"))
+    } catch {}
   }
 
   return {
@@ -304,99 +274,179 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     ): Promise<void> => {
       try {
         const sessionID = inputData.sessionID
+        // modelID 用于区分同一 session 内不同 agent 的 prompt
+        const modelID = inputData.model?.id || "unknown"
         if (!sessionID || !output.system || output.system.length === 0) return
 
-        const callCount = (sessionCallCount.get(sessionID) || 0) + 1
-        sessionCallCount.set(sessionID, callCount)
+        // 调试模式：记录 hook 元信息到文件
+        if (debugLogPath) {
+          const fs = await import("fs")
+          const ts = new Date().toISOString()
+          fs.appendFileSync(debugLogPath, `\n[HOOK] ${ts} model=${modelID} len=${output.system[0]?.length || 0}\n`)
+        }
+        const trackKey = buildTrackKey(sessionID, modelID)
+
+        // 记录 session → trackKey 映射
+        if (!sessionTrackKeys.has(sessionID)) {
+          sessionTrackKeys.set(sessionID, new Set())
+        }
+        sessionTrackKeys.get(sessionID)!.add(trackKey)
+
+        const callCount = (callCountMap.get(trackKey) || 0) + 1
+        callCountMap.set(trackKey, callCount)
 
         const rawText = output.system.join("\n")
-        const { text: normalizedText, replacements } = normalizeText(rawText)
-        const fullHash = simpleHash(normalizedText)
+        const rawLines = rawText.split("\n")
 
-        sessionLastHash.set(sessionID, fullHash)
+        // === 全局基线对比（跨 session 检测动态变化）===
+        const globalPrev = globalPrevRawLines.get(modelID)
+        if (!globalLineChangeCount.has(modelID)) {
+          globalLineChangeCount.set(modelID, new Map())
+        }
+        const gChangeCounts = globalLineChangeCount.get(modelID)!
+        if (!globalNotifiedDynamic.has(modelID)) {
+          globalNotifiedDynamic.set(modelID, new Set())
+        }
+        const gNotified = globalNotifiedDynamic.get(modelID)!
 
-        // --- 将 output.system 中的动态内容替换为占位符 ---
-        // 防止 LLM 把实际的时间戳等当作上下文去理解
-        if (replacements.length > 0) {
-          const normalizedParts = output.system.map((part) => {
-            let result = part
-            for (const [pattern, placeholder] of DYNAMIC_PATTERNS) {
-              pattern.lastIndex = 0
-              result = result.replace(pattern, placeholder)
+        // 构建输出行：默认保持原样，只有全局达到阈值的动态行才替换
+        const outputLines = [...rawLines]
+        const structuralDiffs: LineDiff[] = []
+        const newlyConfirmedDynamic: { lineNum: number; oldLine: string; newLine: string; neutralized: string }[] = []
+        const pendingDynamic: { lineNum: number; count: number }[] = []
+
+        if (globalPrev !== undefined) {
+          // 有全局基线：逐行对比
+          const maxLen = Math.max(globalPrev.length, rawLines.length)
+          for (let i = 0; i < maxLen; i++) {
+            const oldLine = i < globalPrev.length ? globalPrev[i] : undefined
+            const newLine = i < rawLines.length ? rawLines[i] : undefined
+            const lineNum = i + 1
+
+            if (oldLine === newLine) continue
+
+            // 行增删：属于结构变化
+            if (oldLine === undefined || newLine === undefined) {
+              if (oldLine === undefined) {
+                structuralDiffs.push({ type: "added", lineNum, newLine })
+              } else {
+                structuralDiffs.push({ type: "removed", lineNum, oldLine })
+              }
+              continue
             }
-            return result
-          })
-          output.system.splice(0, output.system.length, ...normalizedParts)
+
+            // 行内容变化：neutralize 后对比
+            const neutralizedOld = neutralizeLine(oldLine)
+            const neutralizedNew = neutralizeLine(newLine)
+
+            if (neutralizedOld === neutralizedNew) {
+              // 动态微变：日期/时间/数字变了但结构不变，累计全局变化次数
+              const prevCount = gChangeCounts.get(lineNum) || 0
+              const newCount = prevCount + 1
+              gChangeCounts.set(lineNum, newCount)
+
+              if (newCount >= DYNAMIC_CHANGE_THRESHOLD) {
+                // BUG GUARD: 达到阈值才替换为占位符，确认是频繁变化而非一次性变化
+                outputLines[i] = neutralizedNew
+                if (newCount === DYNAMIC_CHANGE_THRESHOLD) {
+                  newlyConfirmedDynamic.push({ lineNum, oldLine, newLine, neutralized: neutralizedNew })
+                }
+              } else {
+                // 未达阈值：保持原样，可能只是一次性变化
+                pendingDynamic.push({ lineNum, count: newCount })
+              }
+            } else {
+              // 真正的结构变化
+              structuralDiffs.push({ type: "changed", lineNum, oldLine, newLine })
+            }
+          }
+        } else {
+          // 全局首次见到这个 model，已达阈值的行仍需替换（处理进程重启不会发生，但逻辑完整性）
         }
 
-        const prevNormalized = sessionNormalizedText.get(sessionID)
+        // 更新全局基线
+        globalPrevRawLines.set(modelID, rawLines)
 
-        // 首次调用：记录基线，发送开始通知（含动态内容报告）
-        if (prevNormalized === undefined) {
-          sessionNormalizedText.set(sessionID, normalizedText)
-          sessionFirstHash.set(sessionID, fullHash)
+        // 将替换后的内容写回 output.system
+        output.system.splice(0, output.system.length, outputLines.join("\n"))
 
-          const lineCount = normalizedText.split("\n").length
+        // === Per-session 统计（用于 Report）===
+        const isFirstCallInSession = !firstHashMap.has(trackKey)
+        const neutralizedLines = outputLines.map(neutralizeLine)
+        const fullHash = simpleHash(neutralizedLines.join("\n"))
+        if (isFirstCallInSession) {
+          firstHashMap.set(trackKey, fullHash)
+        }
+        lastHashMap.set(trackKey, fullHash)
+
+        // 首次见到这个 model 且本 session 首次调用 → 发送 Active 通知
+        if (globalPrev === undefined && isFirstCallInSession) {
+          const lineCount = rawLines.length
           const lines = [
-            `🐕 *Prompt Watchdog Active*`,
-            `🖥 ${tag}`,
-            `🔑 指纹: \`${fullHash}\``,
-            `📐 ${rawText.length} 字符 / ${lineCount} 行`,
+            `\ud83d\udc15 *Prompt Watchdog* ${tag}`,
+            `\ud83d\udce6 ${escapeMarkdown(modelID)} (${rawText.length} chars / ${lineCount} lines)`,
+            `\ud83d\udd11 \'${fullHash}\'`,
           ]
+          await send(lines.join("\n"))
+          // 全局首次无基线可比，直接返回
+          return
+        }
+        // === 通知逻辑 ===
 
-          // 报告被替换的动态内容（相同模式只报告一次）
-          if (replacements.length > 0) {
-            lines.push(``)
-            lines.push(`🧹 *已过滤动态内容:*`)
-            for (const r of replacements) {
-              if (!reportedDynamicPatterns.has(r.description)) {
-                reportedDynamicPatterns.add(r.description)
-                lines.push(`• ${r.description}: ${escapeMarkdown(truncate(r.original, 80))}`)
-              }
-            }
+        // 1. 动态微变通知：只有刚达到全局阈值且未通知过的行才发送
+        const toNotify = newlyConfirmedDynamic.filter((d) => !gNotified.has(d.lineNum))
+        if (toNotify.length > 0) {
+          for (const d of toNotify) {
+            gNotified.add(d.lineNum)
+          }
+
+          const lines = [
+            `🐕 *Prompt Watchdog* ${tag}`,
+            `🧹 ${escapeMarkdown(modelID)}: ${toNotify.length} 行频繁变化已替换为占位符 (≥${DYNAMIC_CHANGE_THRESHOLD}次)`,
+          ]
+          const shown = toNotify.slice(0, 5)
+          for (const d of shown) {
+            lines.push(`  L${d.lineNum}: ${escapeMarkdown(truncate(d.newLine.trim(), 60))} → \'...\'`)
+          }
+          if (toNotify.length > 5) {
+            lines.push(`  ... 及其他 ${toNotify.length - 5} 处`)
+          }
+          if (pendingDynamic.length > 0) {
+            lines.push(`🕒 ${pendingDynamic.length} 行观察中`)
           }
 
           await send(lines.join("\n"))
-          return
         }
 
-        // 指纹相同则无需 diff（normalize 后相同 = 结构无变化）
-        if (fullHash === simpleHash(prevNormalized)) return
+        // 2. 结构变化告警
+        if (structuralDiffs.length > 0) {
+          const prevTotal = totalDiffLinesMap.get(trackKey) || 0
+          totalDiffLinesMap.set(trackKey, prevTotal + structuralDiffs.length)
 
-        // 行级 diff（对 normalize 后的文本做 diff，排除已知动态变化）
-        const diffs = diffLines(prevNormalized, normalizedText)
-        if (diffs.length === 0) return
+          const blocks = groupDiffsIntoBlocks(structuralDiffs)
 
-        const prevTotal = sessionTotalDiffLines.get(sessionID) || 0
-        sessionTotalDiffLines.set(sessionID, prevTotal + diffs.length)
+          if (!diffSummaryMap.has(trackKey)) {
+            diffSummaryMap.set(trackKey, [])
+          }
+          const summaries = diffSummaryMap.get(trackKey)!
 
-        const blocks = groupDiffsIntoBlocks(diffs)
+          const alertLines = [
+            `🐕 *Prompt Watchdog Alert* ${tag}`,
+            `⚠️ ${escapeMarkdown(modelID)} #${callCount}: ${structuralDiffs.length} 行结构变化`,
+          ]
 
-        if (!sessionDiffSummary.has(sessionID)) {
-          sessionDiffSummary.set(sessionID, [])
+          const shownBlocks = blocks.slice(0, 5)
+          for (const block of shownBlocks) {
+            const summary = summarizeBlock(block)
+            summaries.push(summary)
+            alertLines.push(`  • ${escapeMarkdown(summary)}`)
+          }
+          if (blocks.length > 5) {
+            alertLines.push(`  ... 及其他 ${blocks.length - 5} 个区块`)
+          }
+
+          await send(alertLines.join("\n"))
         }
-        const summaries = sessionDiffSummary.get(sessionID)!
-
-        const alertLines = [
-          `🐕 *Prompt Watchdog Alert*`,
-          `🖥 ${tag}`,
-          `📊 第 ${callCount} 次调用, ${diffs.length} 行变化, ${blocks.length} 个区块`,
-          ``,
-        ]
-
-        const shownBlocks = blocks.slice(0, 5)
-        for (const block of shownBlocks) {
-          const summary = summarizeBlock(block)
-          summaries.push(summary)
-          alertLines.push(`• ${escapeMarkdown(summary)}`)
-        }
-        if (blocks.length > 5) {
-          alertLines.push(`... 及其他 ${blocks.length - 5} 个区块`)
-        }
-
-        await send(alertLines.join("\n"))
-
-        sessionNormalizedText.set(sessionID, normalizedText)
       } catch {}
     },
   }
