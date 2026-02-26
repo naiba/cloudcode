@@ -6,9 +6,11 @@
  * 工作原理：
  * 1. 通过 experimental.chat.system.transform hook 拦截每次 LLM 调用的 system prompt
  * 2. system[] 实际是单元素数组（一个大字符串），对其做行级 diff 定位具体变化
- * 3. 首次调用时发送 "开始监控" 报告（含 prompt 指纹和字符数）
- * 4. 后续调用做行级对比，检测变化行并汇总告警
- * 5. session 空闲时通过 event hook 发送 "监控报告"
+ * 3. diff 前先用正则将已知的动态内容（日期/时间/数字等）替换为占位符，
+ *    避免正常的时间戳变化触发误报
+ * 4. 首次调用时发送 "开始监控" 报告，包含被替换的动态内容清单
+ * 5. 后续调用做行级对比，仅对真正的结构性变化发送告警
+ * 6. session 空闲时发送监控报告
  *
  * 环境变量：
  * - CC_TELEGRAM_BOT_TOKEN: Telegram Bot API token
@@ -48,6 +50,85 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     } catch {}
   }
 
+  // --- 动态内容替换 ---
+  // 每条规则: [正则, 占位符, 人类可读描述]
+  // 规则按从具体到通用排序，防止通用规则先吃掉具体模式
+  const DYNAMIC_PATTERNS: [RegExp, string, string][] = [
+    // omo-env 块中的日期: "Current date: Thu, Feb 26, 2026"
+    [
+      /Current date:\s*.+$/gm,
+      "Current date: {{DATE}}",
+      "omo-env 当前日期",
+    ],
+    // omo-env 块中的时间: "Current time: 04:37:54 AM"
+    [
+      /Current time:\s*.+$/gm,
+      "Current time: {{TIME}}",
+      "omo-env 当前时间",
+    ],
+    // omo-env 块中的时区: "Timezone: UTC"
+    [
+      /Timezone:\s*\S+/gm,
+      "Timezone: {{TZ}}",
+      "omo-env 时区",
+    ],
+    // omo-env 块中的语言: "Locale: en-US"
+    [
+      /Locale:\s*\S+/gm,
+      "Locale: {{LOCALE}}",
+      "omo-env 语言区域",
+    ],
+    // OpenCode 原生注入的日期: "Today's date: Thu Feb 26 2026"
+    [
+      /Today's date:\s*.+$/gm,
+      "Today's date: {{DATE}}",
+      "OpenCode 当前日期",
+    ],
+    // 模型标识行: "You are powered by the model named xxx. The exact model ID is xxx"
+    [
+      /You are powered by the model named .+$/gm,
+      "You are powered by the model named {{MODEL}}. The exact model ID is {{MODEL_ID}}",
+      "模型标识",
+    ],
+    // 精确模型ID: "The exact model ID is song/claude-opus-4-6"
+    [
+      /The exact model ID is \S+/gm,
+      "The exact model ID is {{MODEL_ID}}",
+      "精确模型 ID",
+    ],
+  ]
+
+  interface NormalizeResult {
+    text: string
+    replacements: { description: string; original: string }[]
+  }
+
+  /**
+   * 将已知的动态内容替换为占位符。
+   * 返回替换后的文本和被替换内容的清单。
+   */
+  const normalizeText = (rawText: string): NormalizeResult => {
+    let text = rawText
+    const replacements: { description: string; original: string }[] = []
+
+    for (const [pattern, placeholder, description] of DYNAMIC_PATTERNS) {
+      // 重置 lastIndex（因为用 /g 标志）
+      pattern.lastIndex = 0
+      const matches = text.match(pattern)
+      if (matches) {
+        for (const match of matches) {
+          // 相同描述只记录一次
+          if (!replacements.some((r) => r.description === description)) {
+            replacements.push({ description, original: match.trim() })
+          }
+        }
+        text = text.replace(pattern, placeholder)
+      }
+    }
+
+    return { text, replacements }
+  }
+
   // --- 行级 diff ---
 
   interface LineDiff {
@@ -57,11 +138,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     newLine?: string
   }
 
-  /**
-   * 简易行级 diff：逐行对比旧/新文本，返回变化的行。
-   * 不是完整 LCS diff，但对于 system prompt 这种大部分不变、
-   * 只有少量动态注入的场景足够高效准确。
-   */
   const diffLines = (oldText: string, newText: string): LineDiff[] => {
     const oldLines = oldText.split("\n")
     const newLines = newText.split("\n")
@@ -85,10 +161,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return diffs
   }
 
-  /**
-   * 将连续变化行合并为区块，便于摘要展示。
-   * 例如第 10-13 行连续变化 → 合并为一个区块。
-   */
   interface DiffBlock {
     startLine: number
     endLine: number
@@ -127,9 +199,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return blocks
   }
 
-  /**
-   * 生成区块的摘要文本。
-   */
   const summarizeBlock = (block: DiffBlock): string => {
     const range =
       block.startLine === block.endLine
@@ -141,7 +210,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     if (block.types.has("removed")) typeLabels.push("移除")
     if (block.types.has("changed")) typeLabels.push("修改")
 
-    // 取区块中第一个有内容的变化行作为预览
     const previewLine = block.lines.find((l) => l.newLine || l.oldLine)
     const preview = previewLine
       ? truncate((previewLine.newLine ?? previewLine.oldLine ?? "").trim(), 120)
@@ -160,18 +228,16 @@ export const CloudCodePromptWatchdog = async (input: any) => {
   }
 
   // --- 状态存储 ---
-  // sessionPrevText: 每个 session 上一次的完整 system prompt 文本
-  const sessionPrevText: Map<string, string> = new Map()
-  // sessionFirstHash: 首次完整指纹
+  // sessionNormalizedText: 上一次 normalize 后的文本（用于 diff）
+  const sessionNormalizedText: Map<string, string> = new Map()
   const sessionFirstHash: Map<string, string> = new Map()
-  // sessionLastHash: 最新完整指纹
   const sessionLastHash: Map<string, string> = new Map()
   const sessionCallCount: Map<string, number> = new Map()
-  // sessionTotalDiffLines: 累计变化行数
   const sessionTotalDiffLines: Map<string, number> = new Map()
-  // sessionDiffSummary: 收集所有变化区块摘要（用于结束报告）
   const sessionDiffSummary: Map<string, string[]> = new Map()
   const reportedSessions: Set<string> = new Set()
+  // 已报告过的动态内容替换描述（相同模式全局只报告一次）
+  const reportedDynamicPatterns: Set<string> = new Set()
 
   const sendSessionReport = async (sessionID: string) => {
     if (reportedSessions.has(sessionID)) return
@@ -201,7 +267,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       `${statusEmoji} ${statusText}`,
     ]
 
-    // 附上变化摘要（最多 10 条）
     if (summaries.length > 0) {
       lines.push(``)
       lines.push(`📝 *变化摘要:*`)
@@ -219,96 +284,120 @@ export const CloudCodePromptWatchdog = async (input: any) => {
 
   return {
     event: async ({ event }: { event: { type: string; properties: any } }) => {
-      const isIdle =
-        event.type === "session.idle" ||
-        (event.type === "session.status" && event.properties?.status?.type === "idle")
+      try {
+        const isIdle =
+          event.type === "session.idle" ||
+          (event.type === "session.status" && event.properties?.status?.type === "idle")
 
-      if (isIdle) {
-        const sessionID = event.properties?.sessionID
-        if (sessionID) {
-          await sendSessionReport(sessionID)
+        if (isIdle) {
+          const sessionID = event.properties?.sessionID
+          if (sessionID) {
+            await sendSessionReport(sessionID)
+          }
         }
-      }
+      } catch {}
     },
 
     "experimental.chat.system.transform": async (
       inputData: { sessionID?: string; model: any },
       output: { system: string[] }
     ): Promise<void> => {
-      const sessionID = inputData.sessionID
-      if (!sessionID || !output.system || output.system.length === 0) return
+      try {
+        const sessionID = inputData.sessionID
+        if (!sessionID || !output.system || output.system.length === 0) return
 
-      const callCount = (sessionCallCount.get(sessionID) || 0) + 1
-      sessionCallCount.set(sessionID, callCount)
+        const callCount = (sessionCallCount.get(sessionID) || 0) + 1
+        sessionCallCount.set(sessionID, callCount)
 
-      // system[] 实际是单元素数组，拼接以防万一
-      const currentText = output.system.join("\n")
-      const fullHash = simpleHash(currentText)
+        const rawText = output.system.join("\n")
+        const { text: normalizedText, replacements } = normalizeText(rawText)
+        const fullHash = simpleHash(normalizedText)
 
-      sessionLastHash.set(sessionID, fullHash)
+        sessionLastHash.set(sessionID, fullHash)
 
-      const prevText = sessionPrevText.get(sessionID)
+        // --- 将 output.system 中的动态内容替换为占位符 ---
+        // 防止 LLM 把实际的时间戳等当作上下文去理解
+        if (replacements.length > 0) {
+          const normalizedParts = output.system.map((part) => {
+            let result = part
+            for (const [pattern, placeholder] of DYNAMIC_PATTERNS) {
+              pattern.lastIndex = 0
+              result = result.replace(pattern, placeholder)
+            }
+            return result
+          })
+          output.system.splice(0, output.system.length, ...normalizedParts)
+        }
 
-      // 首次调用：记录基线，发送开始通知
-      if (prevText === undefined) {
-        sessionPrevText.set(sessionID, currentText)
-        sessionFirstHash.set(sessionID, fullHash)
+        const prevNormalized = sessionNormalizedText.get(sessionID)
 
-        const lineCount = currentText.split("\n").length
-        const lines = [
-          `🐕 *Prompt Watchdog Active*`,
+        // 首次调用：记录基线，发送开始通知（含动态内容报告）
+        if (prevNormalized === undefined) {
+          sessionNormalizedText.set(sessionID, normalizedText)
+          sessionFirstHash.set(sessionID, fullHash)
+
+          const lineCount = normalizedText.split("\n").length
+          const lines = [
+            `🐕 *Prompt Watchdog Active*`,
+            `🖥 ${tag}`,
+            `🔑 指纹: \`${fullHash}\``,
+            `📐 ${rawText.length} 字符 / ${lineCount} 行`,
+          ]
+
+          // 报告被替换的动态内容（相同模式只报告一次）
+          if (replacements.length > 0) {
+            lines.push(``)
+            lines.push(`🧹 *已过滤动态内容:*`)
+            for (const r of replacements) {
+              if (!reportedDynamicPatterns.has(r.description)) {
+                reportedDynamicPatterns.add(r.description)
+                lines.push(`• ${r.description}: ${escapeMarkdown(truncate(r.original, 80))}`)
+              }
+            }
+          }
+
+          await send(lines.join("\n"))
+          return
+        }
+
+        // 指纹相同则无需 diff（normalize 后相同 = 结构无变化）
+        if (fullHash === simpleHash(prevNormalized)) return
+
+        // 行级 diff（对 normalize 后的文本做 diff，排除已知动态变化）
+        const diffs = diffLines(prevNormalized, normalizedText)
+        if (diffs.length === 0) return
+
+        const prevTotal = sessionTotalDiffLines.get(sessionID) || 0
+        sessionTotalDiffLines.set(sessionID, prevTotal + diffs.length)
+
+        const blocks = groupDiffsIntoBlocks(diffs)
+
+        if (!sessionDiffSummary.has(sessionID)) {
+          sessionDiffSummary.set(sessionID, [])
+        }
+        const summaries = sessionDiffSummary.get(sessionID)!
+
+        const alertLines = [
+          `🐕 *Prompt Watchdog Alert*`,
           `🖥 ${tag}`,
-          `🔑 指纹: \`${fullHash}\``,
-          `📐 ${currentText.length} 字符 / ${lineCount} 行`,
+          `📊 第 ${callCount} 次调用, ${diffs.length} 行变化, ${blocks.length} 个区块`,
+          ``,
         ]
-        await send(lines.join("\n"))
-        return
-      }
 
-      // 指纹相同则无需 diff
-      const prevHash = simpleHash(prevText)
-      if (fullHash === prevHash) return
+        const shownBlocks = blocks.slice(0, 5)
+        for (const block of shownBlocks) {
+          const summary = summarizeBlock(block)
+          summaries.push(summary)
+          alertLines.push(`• ${escapeMarkdown(summary)}`)
+        }
+        if (blocks.length > 5) {
+          alertLines.push(`... 及其他 ${blocks.length - 5} 个区块`)
+        }
 
-      // 行级 diff
-      const diffs = diffLines(prevText, currentText)
-      if (diffs.length === 0) return
+        await send(alertLines.join("\n"))
 
-      // 累计统计
-      const prevTotal = sessionTotalDiffLines.get(sessionID) || 0
-      sessionTotalDiffLines.set(sessionID, prevTotal + diffs.length)
-
-      // 合并为区块
-      const blocks = groupDiffsIntoBlocks(diffs)
-
-      // 收集摘要
-      if (!sessionDiffSummary.has(sessionID)) {
-        sessionDiffSummary.set(sessionID, [])
-      }
-      const summaries = sessionDiffSummary.get(sessionID)!
-
-      // 构建告警消息
-      const alertLines = [
-        `🐕 *Prompt Watchdog Alert*`,
-        `🖥 ${tag}`,
-        `📊 第 ${callCount} 次调用, ${diffs.length} 行变化, ${blocks.length} 个区块`,
-        ``,
-      ]
-
-      // 每个区块输出摘要（最多展示 5 个区块）
-      const shownBlocks = blocks.slice(0, 5)
-      for (const block of shownBlocks) {
-        const summary = summarizeBlock(block)
-        summaries.push(summary)
-        alertLines.push(`• ${escapeMarkdown(summary)}`)
-      }
-      if (blocks.length > 5) {
-        alertLines.push(`... 及其他 ${blocks.length - 5} 个区块`)
-      }
-
-      await send(alertLines.join("\n"))
-
-      // 更新基线
-      sessionPrevText.set(sessionID, currentText)
+        sessionNormalizedText.set(sessionID, normalizedText)
+      } catch {}
     },
   }
 }
