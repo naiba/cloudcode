@@ -5,9 +5,9 @@
  *
  * 工作原理：
  * 1. 通过 experimental.chat.system.transform hook 拦截每次 LLM 调用的 system prompt
- * 2. 将 system prompt 按段分割并计算 hash
- * 3. 首次调用时发送 "开始监控" 报告（含 prompt 指纹和段落数）
- * 4. 后续调用对比段落 hash，检测频繁变化的段落并告警
+ * 2. system[] 实际是单元素数组（一个大字符串），对其做行级 diff 定位具体变化
+ * 3. 首次调用时发送 "开始监控" 报告（含 prompt 指纹和字符数）
+ * 4. 后续调用做行级对比，检测变化行并汇总告警
  * 5. session 空闲时通过 event hook 发送 "监控报告"
  *
  * 环境变量：
@@ -27,7 +27,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
   const host = process.env.HOSTNAME || "unknown"
   const tag = instanceName ? `\`${instanceName}\`` : `\`${host}\``
 
-  // --- 简易 hash 函数（无需引入 crypto 依赖） ---
   const simpleHash = (str: string): string => {
     let h = 0
     for (let i = 0; i < str.length; i++) {
@@ -37,65 +36,118 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return (h >>> 0).toString(36)
   }
 
-  // --- Telegram 发送（与 _cloudcode-telegram.ts 保持一致的模式） ---
   const send = async (text: string) => {
     try {
+      // Telegram 单条消息上限 4096 字符，截断保护
+      const safeText = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
+        body: JSON.stringify({ chat_id: chatId, text: safeText, parse_mode: "Markdown" }),
       })
     } catch {}
   }
 
-  // --- 状态存储 ---
-  // sessionSegments: 每个 session 上一次的 system prompt 段落 hash 列表
-  const sessionSegments: Map<string, string[]> = new Map()
-  // sessionFirstHash: 每个 session 首次的完整 prompt hash（用于最终报告对比）
-  const sessionFirstHash: Map<string, string> = new Map()
-  // changeCounter: 记录每个段落 hash 变化的次数，key = "sessionID:segmentIndex"
-  const changeCounter: Map<string, number> = new Map()
-  // notifiedSegments: 已通知过的段落，避免重复告警，key = "sessionID:segmentIndex"
-  const notifiedSegments: Set<string> = new Set()
-  // sessionCallCount: 每个 session 的调用次数
-  const sessionCallCount: Map<string, number> = new Map()
-  // sessionTotalChanges: 每个 session 累计变化段落数
-  const sessionTotalChanges: Map<string, number> = new Map()
-  // sessionLastHash: 每个 session 最后一次的完整 prompt hash（用于最终报告对比）
-  const sessionLastHash: Map<string, string> = new Map()
-  // reportedSessions: 已发送过结束报告的 session，避免重复
-  const reportedSessions: Set<string> = new Set()
+  // --- 行级 diff ---
 
-  // 频繁变化阈值：同一段落在一个 session 内变化超过此次数则告警
-  const CHANGE_THRESHOLD = 2
-
-  /**
-   * 将 system prompt 分割成有意义的段落。
-   */
-  const segmentize = (systemParts: string[]): string[] => {
-    const fullText = systemParts.join("\n---PART_BOUNDARY---\n")
-    const segments = fullText.split(/\n{3,}/)
-    return segments.map((s) => s.trim()).filter((s) => s.length > 0)
+  interface LineDiff {
+    type: "added" | "removed" | "changed"
+    lineNum: number
+    oldLine?: string
+    newLine?: string
   }
 
-  const diffSegments = (
-    prev: string[],
-    curr: string[],
-    prevHashes: string[],
-    currHashes: string[]
-  ): { index: number; type: "changed" | "added" | "removed"; preview: string }[] => {
-    const changes: { index: number; type: "changed" | "added" | "removed"; preview: string }[] = []
-    const maxLen = Math.max(prevHashes.length, currHashes.length)
+  /**
+   * 简易行级 diff：逐行对比旧/新文本，返回变化的行。
+   * 不是完整 LCS diff，但对于 system prompt 这种大部分不变、
+   * 只有少量动态注入的场景足够高效准确。
+   */
+  const diffLines = (oldText: string, newText: string): LineDiff[] => {
+    const oldLines = oldText.split("\n")
+    const newLines = newText.split("\n")
+    const diffs: LineDiff[] = []
+    const maxLen = Math.max(oldLines.length, newLines.length)
+
     for (let i = 0; i < maxLen; i++) {
-      if (i >= prevHashes.length) {
-        changes.push({ index: i, type: "added", preview: truncate(curr[i], 200) })
-      } else if (i >= currHashes.length) {
-        changes.push({ index: i, type: "removed", preview: truncate(prev[i], 200) })
-      } else if (prevHashes[i] !== currHashes[i]) {
-        changes.push({ index: i, type: "changed", preview: truncate(curr[i], 200) })
+      const oldLine = i < oldLines.length ? oldLines[i] : undefined
+      const newLine = i < newLines.length ? newLines[i] : undefined
+
+      if (oldLine === newLine) continue
+
+      if (oldLine === undefined) {
+        diffs.push({ type: "added", lineNum: i + 1, newLine })
+      } else if (newLine === undefined) {
+        diffs.push({ type: "removed", lineNum: i + 1, oldLine })
+      } else {
+        diffs.push({ type: "changed", lineNum: i + 1, oldLine, newLine })
       }
     }
-    return changes
+    return diffs
+  }
+
+  /**
+   * 将连续变化行合并为区块，便于摘要展示。
+   * 例如第 10-13 行连续变化 → 合并为一个区块。
+   */
+  interface DiffBlock {
+    startLine: number
+    endLine: number
+    types: Set<LineDiff["type"]>
+    lines: LineDiff[]
+  }
+
+  const groupDiffsIntoBlocks = (diffs: LineDiff[]): DiffBlock[] => {
+    if (diffs.length === 0) return []
+    const blocks: DiffBlock[] = []
+    let current: DiffBlock = {
+      startLine: diffs[0].lineNum,
+      endLine: diffs[0].lineNum,
+      types: new Set([diffs[0].type]),
+      lines: [diffs[0]],
+    }
+
+    for (let i = 1; i < diffs.length; i++) {
+      const diff = diffs[i]
+      // 连续行（间隔 ≤ 2 行）合并为同一区块
+      if (diff.lineNum - current.endLine <= 2) {
+        current.endLine = diff.lineNum
+        current.types.add(diff.type)
+        current.lines.push(diff)
+      } else {
+        blocks.push(current)
+        current = {
+          startLine: diff.lineNum,
+          endLine: diff.lineNum,
+          types: new Set([diff.type]),
+          lines: [diff],
+        }
+      }
+    }
+    blocks.push(current)
+    return blocks
+  }
+
+  /**
+   * 生成区块的摘要文本。
+   */
+  const summarizeBlock = (block: DiffBlock): string => {
+    const range =
+      block.startLine === block.endLine
+        ? `L${block.startLine}`
+        : `L${block.startLine}-${block.endLine}`
+
+    const typeLabels: string[] = []
+    if (block.types.has("added")) typeLabels.push("新增")
+    if (block.types.has("removed")) typeLabels.push("移除")
+    if (block.types.has("changed")) typeLabels.push("修改")
+
+    // 取区块中第一个有内容的变化行作为预览
+    const previewLine = block.lines.find((l) => l.newLine || l.oldLine)
+    const preview = previewLine
+      ? truncate((previewLine.newLine ?? previewLine.oldLine ?? "").trim(), 120)
+      : ""
+
+    return `${range} [${typeLabels.join("+")}] ${preview}`
   }
 
   const truncate = (str: string, maxLen: number): string => {
@@ -107,28 +159,38 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return str.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&")
   }
 
-  /**
-   * 发送 session 结束时的监控报告。
-   * 汇总本次 session 内 system prompt 的变化情况。
-   */
+  // --- 状态存储 ---
+  // sessionPrevText: 每个 session 上一次的完整 system prompt 文本
+  const sessionPrevText: Map<string, string> = new Map()
+  // sessionFirstHash: 首次完整指纹
+  const sessionFirstHash: Map<string, string> = new Map()
+  // sessionLastHash: 最新完整指纹
+  const sessionLastHash: Map<string, string> = new Map()
+  const sessionCallCount: Map<string, number> = new Map()
+  // sessionTotalDiffLines: 累计变化行数
+  const sessionTotalDiffLines: Map<string, number> = new Map()
+  // sessionDiffSummary: 收集所有变化区块摘要（用于结束报告）
+  const sessionDiffSummary: Map<string, string[]> = new Map()
+  const reportedSessions: Set<string> = new Set()
+
   const sendSessionReport = async (sessionID: string) => {
     if (reportedSessions.has(sessionID)) return
-    // 仅对 watchdog 实际监控过的 session 发报告
     if (!sessionCallCount.has(sessionID)) return
     reportedSessions.add(sessionID)
 
     const calls = sessionCallCount.get(sessionID) || 0
-    const totalChanges = sessionTotalChanges.get(sessionID) || 0
+    const totalDiffLines = sessionTotalDiffLines.get(sessionID) || 0
     const firstHash = sessionFirstHash.get(sessionID) || "?"
     const lastHash = sessionLastHash.get(sessionID) || "?"
     const drifted = firstHash !== lastHash
+    const summaries = sessionDiffSummary.get(sessionID) || []
 
-    const statusEmoji = totalChanges === 0 ? "✅" : drifted ? "⚠️" : "🔄"
+    const statusEmoji = totalDiffLines === 0 ? "✅" : drifted ? "⚠️" : "🔄"
     const statusText =
-      totalChanges === 0
+      totalDiffLines === 0
         ? "System prompt 无变化"
         : drifted
-          ? `System prompt 发生漂移 (${totalChanges} 处变化)`
+          ? `System prompt 发生漂移 (${totalDiffLines} 行变化)`
           : `System prompt 有临时波动但最终一致`
 
     const lines = [
@@ -139,11 +201,23 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       `${statusEmoji} ${statusText}`,
     ]
 
+    // 附上变化摘要（最多 10 条）
+    if (summaries.length > 0) {
+      lines.push(``)
+      lines.push(`📝 *变化摘要:*`)
+      const shown = summaries.slice(-10)
+      for (const s of shown) {
+        lines.push(`• ${escapeMarkdown(s)}`)
+      }
+      if (summaries.length > 10) {
+        lines.push(`... 及其他 ${summaries.length - 10} 处`)
+      }
+    }
+
     await send(lines.join("\n"))
   }
 
   return {
-    // --- session 事件：在 session idle 时发送结束报告 ---
     event: async ({ event }: { event: { type: string; properties: any } }) => {
       const isIdle =
         event.type === "session.idle" ||
@@ -157,7 +231,6 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       }
     },
 
-    // --- system prompt 变化检测 ---
     "experimental.chat.system.transform": async (
       inputData: { sessionID?: string; model: any },
       output: { system: string[] }
@@ -168,72 +241,74 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       const callCount = (sessionCallCount.get(sessionID) || 0) + 1
       sessionCallCount.set(sessionID, callCount)
 
-      const segments = segmentize(output.system)
-      const hashes = segments.map(simpleHash)
-      const fullHash = simpleHash(hashes.join(":"))
+      // system[] 实际是单元素数组，拼接以防万一
+      const currentText = output.system.join("\n")
+      const fullHash = simpleHash(currentText)
 
-      // 记录最新 hash（用于结束报告对比）
       sessionLastHash.set(sessionID, fullHash)
 
-      const prevHashes = sessionSegments.get(sessionID)
+      const prevText = sessionPrevText.get(sessionID)
 
-      // 首次调用：记录基线，发送 "开始监控" 通知
-      if (!prevHashes) {
-        sessionSegments.set(sessionID, hashes)
+      // 首次调用：记录基线，发送开始通知
+      if (prevText === undefined) {
+        sessionPrevText.set(sessionID, currentText)
         sessionFirstHash.set(sessionID, fullHash)
 
-        const totalChars = output.system.reduce((sum, s) => sum + s.length, 0)
+        const lineCount = currentText.split("\n").length
         const lines = [
           `🐕 *Prompt Watchdog Active*`,
           `🖥 ${tag}`,
           `🔑 指纹: \`${fullHash}\``,
-          `📐 ${segments.length} 段 / ${totalChars} 字符 / ${output.system.length} parts`,
+          `📐 ${currentText.length} 字符 / ${lineCount} 行`,
         ]
         await send(lines.join("\n"))
         return
       }
 
-      // 对比变化
-      const prevSegments = segmentize(output.system)
-      const changes = diffSegments(prevSegments, segments, prevHashes, hashes)
+      // 指纹相同则无需 diff
+      const prevHash = simpleHash(prevText)
+      if (fullHash === prevHash) return
 
-      if (changes.length > 0) {
-        // 累计变化数
-        const prev = sessionTotalChanges.get(sessionID) || 0
-        sessionTotalChanges.set(sessionID, prev + changes.length)
+      // 行级 diff
+      const diffs = diffLines(prevText, currentText)
+      if (diffs.length === 0) return
 
-        for (const change of changes) {
-          const counterKey = `${sessionID}:${change.index}`
-          const count = (changeCounter.get(counterKey) || 0) + 1
-          changeCounter.set(counterKey, count)
+      // 累计统计
+      const prevTotal = sessionTotalDiffLines.get(sessionID) || 0
+      sessionTotalDiffLines.set(sessionID, prevTotal + diffs.length)
 
-          // 达到阈值且未通知过 → 发送告警
-          if (count >= CHANGE_THRESHOLD && !notifiedSegments.has(counterKey)) {
-            notifiedSegments.add(counterKey)
+      // 合并为区块
+      const blocks = groupDiffsIntoBlocks(diffs)
 
-            const typeLabel =
-              change.type === "changed" ? "🔄 内容变化" :
-              change.type === "added" ? "➕ 新增段落" :
-              "➖ 移除段落"
+      // 收集摘要
+      if (!sessionDiffSummary.has(sessionID)) {
+        sessionDiffSummary.set(sessionID, [])
+      }
+      const summaries = sessionDiffSummary.get(sessionID)!
 
-            const lines = [
-              `🐕 *Prompt Watchdog Alert*`,
-              `🖥 ${tag}`,
-              `📊 Session 内第 ${callCount} 次 LLM 调用`,
-              `${typeLabel} (段落 #${change.index + 1}, 已变化 ${count} 次)`,
-              ``,
-              `\`\`\``,
-              escapeMarkdown(change.preview),
-              `\`\`\``,
-            ]
+      // 构建告警消息
+      const alertLines = [
+        `🐕 *Prompt Watchdog Alert*`,
+        `🖥 ${tag}`,
+        `📊 第 ${callCount} 次调用, ${diffs.length} 行变化, ${blocks.length} 个区块`,
+        ``,
+      ]
 
-            await send(lines.join("\n"))
-          }
-        }
+      // 每个区块输出摘要（最多展示 5 个区块）
+      const shownBlocks = blocks.slice(0, 5)
+      for (const block of shownBlocks) {
+        const summary = summarizeBlock(block)
+        summaries.push(summary)
+        alertLines.push(`• ${escapeMarkdown(summary)}`)
+      }
+      if (blocks.length > 5) {
+        alertLines.push(`... 及其他 ${blocks.length - 5} 个区块`)
       }
 
+      await send(alertLines.join("\n"))
+
       // 更新基线
-      sessionSegments.set(sessionID, hashes)
+      sessionPrevText.set(sessionID, currentText)
     },
   }
 }
