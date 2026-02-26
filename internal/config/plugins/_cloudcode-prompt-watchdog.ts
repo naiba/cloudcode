@@ -1,14 +1,14 @@
 /**
  * CloudCode Prompt Watchdog Plugin
  *
- * 检测 system prompt 中频繁变化的部分（如注入的时间戳、动态内容），
- * 通过 Telegram 通知管理员。
+ * 监控 system prompt 的完整性和变化情况，通过 Telegram 通知管理员。
  *
  * 工作原理：
  * 1. 通过 experimental.chat.system.transform hook 拦截每次 LLM 调用的 system prompt
- * 2. 将 system prompt 按行分段，对每段计算 hash
- * 3. 对比同一 session 内前后两次的段落 hash，找出变化的段落
- * 4. 如果检测到频繁变化的段落（同一段在短时间内多次变化），发送 Telegram 告警
+ * 2. 将 system prompt 按段分割并计算 hash
+ * 3. 首次调用时发送 "开始监控" 报告（含 prompt 指纹和段落数）
+ * 4. 后续调用对比段落 hash，检测频繁变化的段落并告警
+ * 5. session 空闲时通过 event hook 发送 "监控报告"
  *
  * 环境变量：
  * - CC_TELEGRAM_BOT_TOKEN: Telegram Bot API token
@@ -51,31 +51,33 @@ export const CloudCodePromptWatchdog = async (input: any) => {
   // --- 状态存储 ---
   // sessionSegments: 每个 session 上一次的 system prompt 段落 hash 列表
   const sessionSegments: Map<string, string[]> = new Map()
+  // sessionFirstHash: 每个 session 首次的完整 prompt hash（用于最终报告对比）
+  const sessionFirstHash: Map<string, string> = new Map()
   // changeCounter: 记录每个段落 hash 变化的次数，key = "sessionID:segmentIndex"
   const changeCounter: Map<string, number> = new Map()
   // notifiedSegments: 已通知过的段落，避免重复告警，key = "sessionID:segmentIndex"
   const notifiedSegments: Set<string> = new Set()
-  // sessionCallCount: 每个 session 的调用次数，用于跳过首次调用（首次无法对比）
+  // sessionCallCount: 每个 session 的调用次数
   const sessionCallCount: Map<string, number> = new Map()
+  // sessionTotalChanges: 每个 session 累计变化段落数
+  const sessionTotalChanges: Map<string, number> = new Map()
+  // sessionLastHash: 每个 session 最后一次的完整 prompt hash（用于最终报告对比）
+  const sessionLastHash: Map<string, string> = new Map()
+  // reportedSessions: 已发送过结束报告的 session，避免重复
+  const reportedSessions: Set<string> = new Set()
 
   // 频繁变化阈值：同一段落在一个 session 内变化超过此次数则告警
   const CHANGE_THRESHOLD = 2
 
   /**
    * 将 system prompt 分割成有意义的段落。
-   * 按 XML 标签块和空行分隔，保留段落间的结构关系。
    */
   const segmentize = (systemParts: string[]): string[] => {
     const fullText = systemParts.join("\n---PART_BOUNDARY---\n")
-    // 按连续空行或 XML 标签边界分割
     const segments = fullText.split(/\n{3,}/)
     return segments.map((s) => s.trim()).filter((s) => s.length > 0)
   }
 
-  /**
-   * 对比两次段落列表，找出变化的段落。
-   * 返回变化的段落索引和内容摘要。
-   */
   const diffSegments = (
     prev: string[],
     curr: string[],
@@ -83,24 +85,16 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     currHashes: string[]
   ): { index: number; type: "changed" | "added" | "removed"; preview: string }[] => {
     const changes: { index: number; type: "changed" | "added" | "removed"; preview: string }[] = []
-
     const maxLen = Math.max(prevHashes.length, currHashes.length)
     for (let i = 0; i < maxLen; i++) {
       if (i >= prevHashes.length) {
-        // 新增的段落
-        const preview = truncate(curr[i], 200)
-        changes.push({ index: i, type: "added", preview })
+        changes.push({ index: i, type: "added", preview: truncate(curr[i], 200) })
       } else if (i >= currHashes.length) {
-        // 被移除的段落
-        const preview = truncate(prev[i], 200)
-        changes.push({ index: i, type: "removed", preview })
+        changes.push({ index: i, type: "removed", preview: truncate(prev[i], 200) })
       } else if (prevHashes[i] !== currHashes[i]) {
-        // 内容变化的段落
-        const preview = truncate(curr[i], 200)
-        changes.push({ index: i, type: "changed", preview })
+        changes.push({ index: i, type: "changed", preview: truncate(curr[i], 200) })
       }
     }
-
     return changes
   }
 
@@ -109,12 +103,61 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     return str.slice(0, maxLen) + "..."
   }
 
-  // 转义 Markdown 特殊字符，避免 Telegram 解析失败
   const escapeMarkdown = (str: string): string => {
     return str.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&")
   }
 
+  /**
+   * 发送 session 结束时的监控报告。
+   * 汇总本次 session 内 system prompt 的变化情况。
+   */
+  const sendSessionReport = async (sessionID: string) => {
+    if (reportedSessions.has(sessionID)) return
+    // 仅对 watchdog 实际监控过的 session 发报告
+    if (!sessionCallCount.has(sessionID)) return
+    reportedSessions.add(sessionID)
+
+    const calls = sessionCallCount.get(sessionID) || 0
+    const totalChanges = sessionTotalChanges.get(sessionID) || 0
+    const firstHash = sessionFirstHash.get(sessionID) || "?"
+    const lastHash = sessionLastHash.get(sessionID) || "?"
+    const drifted = firstHash !== lastHash
+
+    const statusEmoji = totalChanges === 0 ? "✅" : drifted ? "⚠️" : "🔄"
+    const statusText =
+      totalChanges === 0
+        ? "System prompt 无变化"
+        : drifted
+          ? `System prompt 发生漂移 (${totalChanges} 处变化)`
+          : `System prompt 有临时波动但最终一致`
+
+    const lines = [
+      `🐕 *Prompt Watchdog Report*`,
+      `🖥 ${tag}`,
+      `📊 共 ${calls} 次 LLM 调用`,
+      `🔑 指纹: \`${firstHash}\` → \`${lastHash}\``,
+      `${statusEmoji} ${statusText}`,
+    ]
+
+    await send(lines.join("\n"))
+  }
+
   return {
+    // --- session 事件：在 session idle 时发送结束报告 ---
+    event: async ({ event }: { event: { type: string; properties: any } }) => {
+      const isIdle =
+        event.type === "session.idle" ||
+        (event.type === "session.status" && event.properties?.status?.type === "idle")
+
+      if (isIdle) {
+        const sessionID = event.properties?.sessionID
+        if (sessionID) {
+          await sendSessionReport(sessionID)
+        }
+      }
+    },
+
+    // --- system prompt 变化检测 ---
     "experimental.chat.system.transform": async (
       inputData: { sessionID?: string; model: any },
       output: { system: string[] }
@@ -122,27 +165,43 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       const sessionID = inputData.sessionID
       if (!sessionID || !output.system || output.system.length === 0) return
 
-      // 更新调用次数
       const callCount = (sessionCallCount.get(sessionID) || 0) + 1
       sessionCallCount.set(sessionID, callCount)
 
-      // 分段并计算 hash
       const segments = segmentize(output.system)
       const hashes = segments.map(simpleHash)
+      const fullHash = simpleHash(hashes.join(":"))
+
+      // 记录最新 hash（用于结束报告对比）
+      sessionLastHash.set(sessionID, fullHash)
 
       const prevHashes = sessionSegments.get(sessionID)
 
-      // 首次调用，仅记录基线
+      // 首次调用：记录基线，发送 "开始监控" 通知
       if (!prevHashes) {
         sessionSegments.set(sessionID, hashes)
+        sessionFirstHash.set(sessionID, fullHash)
+
+        const totalChars = output.system.reduce((sum, s) => sum + s.length, 0)
+        const lines = [
+          `🐕 *Prompt Watchdog Active*`,
+          `🖥 ${tag}`,
+          `🔑 指纹: \`${fullHash}\``,
+          `📐 ${segments.length} 段 / ${totalChars} 字符 / ${output.system.length} parts`,
+        ]
+        await send(lines.join("\n"))
         return
       }
 
       // 对比变化
-      const prevSegments = segmentize(output.system) // 用当前的分段逻辑重建，保证一致性
+      const prevSegments = segmentize(output.system)
       const changes = diffSegments(prevSegments, segments, prevHashes, hashes)
 
       if (changes.length > 0) {
+        // 累计变化数
+        const prev = sessionTotalChanges.get(sessionID) || 0
+        sessionTotalChanges.set(sessionID, prev + changes.length)
+
         for (const change of changes) {
           const counterKey = `${sessionID}:${change.index}`
           const count = (changeCounter.get(counterKey) || 0) + 1
