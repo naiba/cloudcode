@@ -1,5 +1,8 @@
 # CloudCode
 
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
+[![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://www.docker.com)
+
 一个自托管的 [OpenCode](https://opencode.ai) 实例管理平台。将多个隔离的 OpenCode 环境作为 Docker 容器运行，并通过统一的 Web 面板管理。
 
 [English](README.md)
@@ -7,13 +10,13 @@
 ## 功能特性
 
 - **多实例管理** — 创建、启动、停止、重启、删除 OpenCode 实例
-- **Session 隔离** — 每个实例拥有独立的 session 数据，认证令牌全局共享
+- **Session 隔离** — 每个实例拥有独立的工作空间，认证令牌全局共享
 - **共享全局配置** — 在 Settings 页面统一管理 `opencode.jsonc`、`AGENTS.md`、认证令牌、自定义命令、Agent、Skills 和 Plugins
-- **skills.sh 集成** — 在任意容器内通过 `bunx skills add` 安装 [skills.sh](https://skills.sh) 技能，所有实例共享
-- **Telegram 通知** — 内置插件在任务完成/报错时发送 Telegram 消息（配置 `CC_TELEGRAM_BOT_TOKEN` 和 `CC_TELEGRAM_CHAT_ID`）
-- **暗色/亮色主题** — 跟随系统偏好，支持手动切换，localStorage 记忆
+- **skills.sh 集成** — 在任意容器内安装 [skills.sh](https://skills.sh) 技能，所有实例共享
+- **Telegram 通知** — 内置插件在任务完成/报错时发送 Telegram 消息
+- **暗色/亮色主题** — 跟随系统偏好，支持手动切换
 - **反向代理** — 通过 `/instance/{id}/` 路径访问每个实例的 Web UI
-- **容器自动更新** — base 镜像包含 OpenCode + Oh My OpenCode，每次启动时自动更新
+- **容器自动更新** — 每次启动时自动更新 OpenCode + Oh My OpenCode
 
 ## 快速开始
 
@@ -21,6 +24,8 @@
 
 ```bash
 mkdir cloudcode && cd cloudcode
+# 创建共享 Docker 网络（必需，仅首次执行）
+docker network create cloudcode-net
 curl -O https://raw.githubusercontent.com/naiba/cloudcode/main/docker-compose.yml
 docker compose up -d
 ```
@@ -52,11 +57,11 @@ docker compose up -d
 
 | 存储位置 | 容器内路径 | 范围 | 内容 |
 |---|---|---|---|
-| `data/config/opencode/` (bind mount) | `/root/.config/opencode/` | 全局 | `opencode.jsonc`、`AGENTS.md`、`package.json`、commands/、agents/、skills/、plugins/ |
-| `data/config/opencode-data/auth.json` (bind mount) | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
-| `data/config/dot-opencode/` (bind mount) | `/root/.opencode/` | 全局 | `package.json` |
-| `data/config/agents-skills/` (bind mount) | `/root/.agents/` | 全局 | 通过 [skills.sh](https://skills.sh) 安装的技能和 lock file |
-| `cloudcode-home-{id}` (named volume) | `/root` | 按实例 | 工作目录、clone 的代码、session 数据、数据库等 |
+| `data/config/opencode/` | `/root/.config/opencode/` | 全局 | `opencode.jsonc`、`AGENTS.md`、`package.json`、commands/、agents/、skills/、plugins/ |
+| `data/config/opencode-data/auth.json` | `/root/.local/share/opencode/auth.json` | 全局 | 认证信息（所有实例共享） |
+| `data/config/dot-opencode/` | `/root/.opencode/` | 全局 | `package.json` |
+| `data/config/agents-skills/` | `/root/.agents/` | 全局 | 通过 [skills.sh](https://skills.sh) 安装的技能 |
+| `cloudcode-home-{id}` (volume) | `/root` | 按实例 | 工作目录、clone 的代码、session 数据 |
 
 环境变量（如 `ANTHROPIC_API_KEY`、`GH_TOKEN`）在 Settings 中配置，自动注入所有容器。
 
@@ -88,4 +93,3 @@ go vet ./...
 # 编译检查
 go build ./...
 ```
-

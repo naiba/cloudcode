@@ -1,5 +1,8 @@
 # CloudCode
 
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
+[![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://www.docker.com)
+
 A self-hosted management platform for [OpenCode](https://opencode.ai) instances. Spin up multiple isolated OpenCode environments as Docker containers and manage them through a single web dashboard.
 
 [中文说明](README_zh.md)
@@ -7,13 +10,13 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 ## Features
 
 - **Multi-instance management** — Create, start, stop, restart, and delete OpenCode instances
-- **Session isolation** — Each instance has its own session data; auth tokens are shared globally
+- **Session isolation** — Each instance has its own workspace; auth tokens are shared globally
 - **Shared global config** — Manage `opencode.jsonc`, `AGENTS.md`, auth tokens, custom commands, agents, skills, and plugins from a unified Settings UI
-- **skills.sh integration** — Install [skills.sh](https://skills.sh) skills inside any container via `bunx skills add`, shared across all instances
-- **Telegram notifications** — Built-in plugin sends Telegram messages on task completion/error (configure `CC_TELEGRAM_BOT_TOKEN` and `CC_TELEGRAM_CHAT_ID`)
-- **Dark/Light theme** — Follows system preference, manual toggle with localStorage persistence
+- **skills.sh integration** — Install [skills.sh](https://skills.sh) skills inside any container, shared across all instances
+- **Telegram notifications** — Built-in plugin sends Telegram messages on task completion/error
+- **Dark/Light theme** — Follows system preference with manual toggle
 - **Reverse proxy** — Access each instance's Web UI through a single entry point (`/instance/{id}/`)
-- **Auto-updating containers** — Base image includes OpenCode + Oh My OpenCode, updated on each container start
+- **Auto-updating containers** — OpenCode + Oh My OpenCode updated on each container start
 
 ## Quick Start
 
@@ -21,6 +24,8 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 
 ```bash
 mkdir cloudcode && cd cloudcode
+# Create the shared Docker network (required, one-time setup)
+docker network create cloudcode-net
 curl -O https://raw.githubusercontent.com/naiba/cloudcode/main/docker-compose.yml
 docker compose up -d
 ```
@@ -52,11 +57,11 @@ Global config is managed through the Settings page and bind-mounted into all con
 
 | Storage | Container Path | Scope | Contents |
 |---|---|---|---|
-| `data/config/opencode/` (bind mount) | `/root/.config/opencode/` | Global | `opencode.jsonc`, `AGENTS.md`, `package.json`, commands/, agents/, skills/, plugins/ |
-| `data/config/opencode-data/auth.json` (bind mount) | `/root/.local/share/opencode/auth.json` | Global | Auth tokens (shared across all instances) |
-| `data/config/dot-opencode/` (bind mount) | `/root/.opencode/` | Global | `package.json` |
-| `data/config/agents-skills/` (bind mount) | `/root/.agents/` | Global | Skills installed via [skills.sh](https://skills.sh) and lock file |
-| `cloudcode-home-{id}` (named volume) | `/root` | Per-instance | Workspace, cloned repos, session data, databases |
+| `data/config/opencode/` | `/root/.config/opencode/` | Global | `opencode.jsonc`, `AGENTS.md`, `package.json`, commands/, agents/, skills/, plugins/ |
+| `data/config/opencode-data/auth.json` | `/root/.local/share/opencode/auth.json` | Global | Auth tokens (shared across all instances) |
+| `data/config/dot-opencode/` | `/root/.opencode/` | Global | `package.json` |
+| `data/config/agents-skills/` | `/root/.agents/` | Global | Skills installed via [skills.sh](https://skills.sh) |
+| `cloudcode-home-{id}` (volume) | `/root` | Per-instance | Workspace, cloned repos, session data |
 
 Environment variables (e.g. `ANTHROPIC_API_KEY`, `GH_TOKEN`) are configured in Settings and injected into all containers.
 
@@ -88,4 +93,3 @@ go vet ./...
 # Build check
 go build ./...
 ```
-
