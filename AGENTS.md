@@ -146,9 +146,87 @@ _ = h.store.Update(inst)
 
 子目录：`commands/`、`agents/`、`skills/`、`plugins/` — 通过 Settings 页面在线管理。
 
-内置 plugin `_cloudcode-telegram.ts` 通过 `//go:embed` 嵌入二进制，每次启动强制写入 `plugins/` 目录。
+内置 plugin 通过 `//go:embed` 嵌入二进制，每次启动强制写入 `plugins/` 目录（覆盖旧版本）：
+
+#### `_cloudcode-telegram.ts` — 会话通知
 - 监听 `session.idle` 和 `session.error` 事件，通过 Telegram Bot API 发送通知
 - 读取 `CC_TELEGRAM_BOT_TOKEN` 和 `CC_TELEGRAM_CHAT_ID` 环境变量，未配置则静默跳过
+
+#### `_cloudcode-prompt-watchdog.ts` — System Prompt 监控
+
+通过 `experimental.chat.system.transform` hook 拦截每次 LLM 调用的 system prompt，自动过滤时间行并检测结构变化。所有通知中的内容变化均使用 git unified diff 格式展示。
+
+**核心机制：**
+- `analyzeTemporalLine()` 判断每行是否包含日期/时间/时间戳（多组正则按优先级排列）
+- 短行（去除时间内容后剩余 ≤ 30 字符）→ 直接删除，Telegram 通知一次（git-diff 格式展示被删除的行及上下文）
+- 长行（剩余 > 30 字符）→ 保留不删除，Telegram 简要提示行数
+- `temporalLineSignature()` 生成内容签名（去除时间数值后的结构指纹），按 modelID 去重，相同签名只通知一次
+- 签名前缀区分类型：`removed:` = 短行删除，`temporal-alert:` = 长行告警
+- 小幅 diff 告警：对过滤后的文本做行级 diff，diff < 10 行时替换基线并发送 git unified diff 风格告警（带 `@@` hunk 头和 `-`/`+` 前缀），≥ 10 行视为大变更不替换不告警
+- session 结束（`session.idle`）时发送监控总结报告（含最近一次 diff 的 git-diff 格式展示）
+
+**通知格式（统一 git-diff 风格）：**
+- 时间行过滤通知：`formatRemovedLinesDiff()` 根据被删除行号在原始文本中生成 diff（带上下文）
+- 小幅 diff 告警：`formatUnifiedDiff()` 对比过滤后文本的前后基线生成完整 unified diff
+- Report 总结：展示最近一次 diff 的 git-diff 代码块
+
+**环境变量：**
+- `CC_TELEGRAM_BOT_TOKEN` / `CC_TELEGRAM_CHAT_ID`：Telegram 通知（必需）
+- `CC_PROMPT_WATCHDOG_DISABLED`：设为 `"true"` 禁用
+- `CC_WATCHDOG_DEBUG_LOG`：设为文件路径开启调试日志（如 `/tmp/watchdog.log`）
+- `CC_INSTANCE_NAME`：通知中显示的实例标识
+
+**已知陷阱（修改时务必注意）：**
+- 正则顺序：长模式（ISO datetime）必须在短模式（date、time）之前，否则短模式先匹配局部导致长模式失效
+- 带 `/g` 的正则在 `test`/`exec` 后 `lastIndex` 不会自动重置，每次使用前必须手动 `pattern.lastIndex = 0`
+- 月份正则不能用 `\b(Mar)\w*` 形式（会误匹配 Marking/Market），必须用精确匹配 `\b(March|Mar)\b`
+- May 与英文助动词同形，已从正则中移除（接受 May 日期不被检测的代价）
+- 行号会因 prompt 上方内容增删而漂移，因此用内容签名（而非行号）判断是否已通知
+- `system: string[]` 实际是单元素数组（一个大字符串），不同 agent（如 title agent claude-haiku vs 主 agent claude-opus）会分别触发 hook
+- hook 入口必须 try-catch 包裹，避免 plugin bug 导致 opencode 崩溃
+- `formatRemovedLinesDiff` 不能用 `formatUnifiedDiff(rawText, filteredText)` 替代，因为简单的行号对齐 diff 在删除行后会导致下方所有内容错位
+
+**本地测试方法（tmux + opencode TUI）：**
+
+插件状态（`globalPrevFilteredText` 等 Map）存在内存中，只有 TUI 模式能在同一进程内多轮测试。`opencode run` 每次是新进程，插件状态不保留。
+
+核心难点：修改 config 目录下的文件（AGENTS.md、plugins/）会触发 opencode 的 config watcher → bun install 重载 → TUI 重绘，如果 `send-keys` 的文字正在输入，会和 bun install 的 stdout 混在一起污染输入框。
+
+可靠的测试时序：
+
+```bash
+# 1. 启动 opencode TUI
+tmux new-session -d -s wt -x 200 -y 50
+tmux send-keys -t wt 'cd /tmp && CC_WATCHDOG_DEBUG_LOG=/tmp/wt.log opencode' Enter
+# 轮询等 MCP 出现在 status bar（TUI 就绪）
+for i in $(seq 1 30); do sleep 1; tmux capture-pane -p -t wt | grep -q 'MCP' && break; done
+
+# 2. 发第一条消息（建立基线）
+tmux send-keys -t wt 'say 1' Enter
+# 轮询 watchdog log 等 Report 出现（session idle）
+for i in $(seq 1 60); do sleep 1; grep -q 'Report' /tmp/wt.log && break; done
+
+# 3. 修改 config 触发 prompt 变化
+# （编辑 AGENTS.md 等文件）
+# 等 bun install 重载完成（轮询 'Checked' 或固定 sleep 5）
+sleep 5
+
+# 4. 发第二条消息（触发 diff 告警）
+# 先 Escape 清空输入框残留（bun install 输出可能污染输入框）
+tmux send-keys -t wt Escape
+sleep 2
+tmux send-keys -t wt 'say 2' Enter
+# 轮询新的 HOOK 或 DIFF 出现
+for i in $(seq 1 60); do sleep 1; [ "$(grep -c 'HOOK' /tmp/wt.log)" -gt 2 ] && break; done
+
+# 5. 验证结果
+grep -E 'DIFF|Alert' /tmp/wt.log
+```
+
+要点：
+- 修改文件后必须等 bun install 完成再输入
+- bun install 后用 `Escape` 清空输入框残留
+- 用 watchdog log 内容轮询（而非固定 sleep）判断就绪状态
 
 ## 反向代理架构
 
