@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -96,9 +95,6 @@ func (m *Manager) ensureDirs() error {
 		}
 	}
 
-	// Migrate: before v0.5.0, skill dirs lived directly under agents-skills/.
-	// Now agents-skills/ maps to /root/.agents/, so skills must be in agents-skills/skills/.
-	m.migrateAgentsSkills()
 
 	pluginPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-telegram.ts")
 	if err := os.WriteFile(pluginPath, telegramPlugin, 0640); err != nil {
@@ -118,37 +114,6 @@ func (m *Manager) ensureDirs() error {
 	return nil
 }
 
-// migrateAgentsSkills moves skill directories from agents-skills/ to agents-skills/skills/.
-// Before v0.5.0, agents-skills/ was bind-mounted directly to /root/.agents/skills/.
-// Now it maps to /root/.agents/ so that .skill-lock.json is also shared globally.
-func (m *Manager) migrateAgentsSkills() {
-	parentDir := filepath.Join(m.rootDir, DirAgentsSkills)
-	skillsDir := filepath.Join(parentDir, "skills")
-	entries, err := os.ReadDir(parentDir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		// Only migrate directories that contain SKILL.md (actual skills, not "skills" subdir itself)
-		if !e.IsDir() || e.Name() == "skills" {
-			continue
-		}
-		oldPath := filepath.Join(parentDir, e.Name())
-		skillMarker := filepath.Join(oldPath, "SKILL.md")
-		if _, err := os.Stat(skillMarker); err != nil {
-			continue
-		}
-		newPath := filepath.Join(skillsDir, e.Name())
-		if _, err := os.Stat(newPath); err == nil {
-			// Already exists in skills/ subdir, remove old copy
-			_ = os.RemoveAll(oldPath)
-			continue
-		}
-		if err := os.Rename(oldPath, newPath); err != nil {
-			log.Printf("Warning: failed to migrate skill %s: %v", e.Name(), err)
-		}
-	}
-}
 
 // ensureInstructionsFile writes the CloudCode instructions as a standalone
 // instruction file and ensures opencode.jsonc references it via the
@@ -160,11 +125,6 @@ func (m *Manager) ensureInstructionsFile() error {
 		return fmt.Errorf("write instructions file: %w", err)
 	}
 
-	// Clean up legacy file and reference from previous versions
-	legacyName := "_cloudcode-commit-rules.md"
-	legacyPath := filepath.Join(m.rootDir, DirOpenCodeConfig, legacyName)
-	_ = os.Remove(legacyPath)
-	m.removeInstruction("/root/.config/opencode/" + legacyName)
 	// Use absolute container path so opencode resolves it regardless of project dir
 	return m.ensureInstruction("/root/.config/opencode/" + instructionsFileName)
 }
@@ -219,46 +179,6 @@ func (m *Manager) ensureInstruction(filename string) error {
 	return os.WriteFile(configPath, out, 0640)
 }
 
-
-// removeInstruction removes a filename from the "instructions" array in
-// opencode.jsonc if present. Best-effort: errors are silently ignored.
-func (m *Manager) removeInstruction(filename string) {
-	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		return
-	}
-
-	stripped := stripJSONCComments(string(raw))
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(stripped), &cfg); err != nil {
-		return
-	}
-
-	arr, ok := cfg["instructions"].([]any)
-	if !ok {
-		return
-	}
-
-	var filtered []any
-	for _, v := range arr {
-		if s, ok := v.(string); ok && s == filename {
-			continue
-		}
-		filtered = append(filtered, v)
-	}
-
-	if len(filtered) == len(arr) {
-		return // nothing removed
-	}
-
-	cfg["instructions"] = filtered
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(configPath, out, 0640)
-}
 
 // stripJSONCComments removes // and /* */ comments from JSONC content.
 func stripJSONCComments(s string) string {

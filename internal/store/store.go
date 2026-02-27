@@ -73,8 +73,6 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-
-	s.db.Exec(`ALTER TABLE instances ADD COLUMN error_msg TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
