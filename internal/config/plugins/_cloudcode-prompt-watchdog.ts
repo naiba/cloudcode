@@ -5,18 +5,16 @@
  *
  * 工作原理：
  * 1. 通过 experimental.chat.system.transform hook 拦截每次 LLM 调用的 system prompt
- * 2. system[] 实际是单元素数组（一个大字符串），对其做行级 diff 定位具体变化
- * 3. 频繁变化检测（非首次变化即替换）：
- *    - 首次调用记录基线，不做任何替换
- *    - 后续调用逐行对比，发现变化行后 neutralize（日期/时间/数字→占位符）再比较
- *    - neutralize 后相同 → 判定为"动态微变"（如时间戳更新），累计该行变化次数
- *    - 变化次数达到阈值（DYNAMIC_CHANGE_THRESHOLD，默认2）后才开始替换该行为占位符版本
- *    - 未达阈值的行保持原样，可能只是一次性变化
- *    - neutralize 后仍不同 → 判定为"结构变化"，立即触发告警
- * 4. 同一 session 内不同 agent（如 title vs sisyphus）使用 sessionID:modelID 复合 key 独立追踪
- * 5. 同一 session 中同一行位置的动态替换达到阈值时只通知一次，避免重复告警
- * 6. 首次调用时发送 "开始监控" 报告
- * 7. session 空闲时发送监控总结报告
+ * 2. system[] 实际是单元素数组（一个大字符串），对其做行级处理
+ * 3. 时间行处理（不做变化检测）：
+ *    - 每次 hook 调用时扫描所有行
+ *    - 判断行是否包含时间/日期/时间戳（正则匹配）
+ *    - 如果包含且去除时间内容后剩余文本 ≤ 30 字符 → 直接删除该行，通知一次（带行号+内容）
+ *    - 如果包含但去除时间内容后剩余文本 > 30 字符 → 不删除，但告警一次（带时间内容+前后上下文+行号）
+ *    - 按 modelID 记录已通知的行内容签名，相同签名只通知一次
+ * 4. 结构变化检测：全局基线 diff，检测非时间行的真正变化
+ * 5. 首次调用时发送 "开始监控" 报告
+ * 6. session 空闲时发送监控总结报告
  *
  * 环境变量：
  * - CC_TELEGRAM_BOT_TOKEN: Telegram Bot API token
@@ -62,31 +60,67 @@ export const CloudCodePromptWatchdog = async (input: any) => {
     } catch {}
   }
 
-  // --- 动态分析核心：将一行中的日期/时间/数字替换为通用占位符 ---
-  // 不使用静态规则列表，而是对任意行做通用的 neutralize 处理，
-  // 让 diff 对比自动发现哪些行只是日期/时间/数字发生了变化
-  const neutralizeLine = (line: string): string => {
-    return (
-      line
-        // 时间格式: 04:37:54 AM, 16:30:00, 4:37 PM 等
-        .replace(/\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?/g, "{{TIME}}")
-        // ISO 日期时间: 2026-02-26T04:37:54Z, 2026-02-26 04:37 等
-        .replace(/\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/g, "{{DATETIME}}")
-        // 日期格式: 2026-02-26, 02/26/2026, Feb 26 2026 等
-        .replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, "{{DATE}}")
-        .replace(/\d{1,2}[-/]\d{1,2}[-/]\d{4}/g, "{{DATE}}")
-        // 英文星期: Mon, Tue, Wed, ... Sunday, Monday ...
-        .replace(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(day|nesday|rsday|urday)?/gi, "{{DAY}}")
-        // 英文月份: Jan, Feb, ... January, February ...
-        .replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*/gi, "{{MONTH}}")
-        // 4位年份（独立出现）
-        .replace(/\b(19|20)\d{2}\b/g, "{{YEAR}}")
-        // 剩余的独立数字序列（兜底：捕获所有纯数字变化）
-        .replace(/\b\d+\b/g, "{{N}}")
-    )
+  // --- 时间行判定 ---
+  // BUG GUARD: 正则顺序很重要 — 长模式（ISO datetime）必须在短模式（date、time）之前，
+  // 否则短模式会先匹配局部字符串，导致长模式无法完整匹配
+  const temporalPatterns: RegExp[] = [
+    // ISO 日期时间: 2026-02-26T04:37:54Z, 2026-02-26 04:37:54+08:00 等
+    /\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/g,
+    // 时间格式: 04:37:54 AM, 16:30:00, 4:37 PM 等
+    /\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?/g,
+    // 日期格式: 2026-02-26, 02/26/2026
+    /\d{4}[-/]\d{1,2}[-/]\d{1,2}/g,
+    /\d{1,2}[-/]\d{1,2}[-/]\d{4}/g,
+    // 英文星期: 只匹配 3 字母缩写（后跟非字母）或完整拼写
+    // BUG GUARD: 不能用 \b(Mon)\w* 会误匹配 Monkey/Monitor 等普通单词
+    /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b,?/gi,
+    // 英文月份: 只匹配 3 字母缩写（后跟非字母）或完整拼写
+    // BUG GUARD: 不能用 \b(Mar)\w* 会误匹配 Marking/Market 等，只允许精确缩写或完整月份名
+    // BUG GUARD: 不包含 May — 与英文助动词 may 完全同形，无法区分，误报率极高
+    /\b(January|February|March|April|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b,?/gi,
+    // 4位年份（独立出现）
+    /\b(19|20)\d{2}\b/g,
+  ]
+
+  interface TemporalAnalysis {
+    hasTemporal: boolean
+    /** 匹配到的时间/日期/时间戳片段 */
+    matchedFragments: string[]
+    /** 去除时间内容后的剩余文本 */
+    strippedText: string
+    /** 剩余文本是否 ≤ 30 字符（短行，应删除） */
+    isShortLine: boolean
   }
 
-  // --- 行级 diff ---
+  /**
+   * 分析一行是否包含时间/日期/时间戳，返回匹配详情
+   *
+   * BUG GUARD: 必须先检查是否有时间匹配（hasTemporal），再检查剩余长度。
+   * 如果跳过检查，任何 ≤ 30 字符的短行都会被误删。
+   */
+  const analyzeTemporalLine = (line: string): TemporalAnalysis => {
+    let stripped = line
+    let hasTemporal = false
+    const matchedFragments: string[] = []
+    for (const pattern of temporalPatterns) {
+      // BUG GUARD: 必须重置 lastIndex，因为带 /g 的正则在 test/exec 后会保留状态
+      pattern.lastIndex = 0
+      const matches = stripped.match(pattern)
+      if (matches) {
+        hasTemporal = true
+        matchedFragments.push(...matches)
+        stripped = stripped.replace(pattern, "")
+      }
+    }
+    return {
+      hasTemporal,
+      matchedFragments,
+      strippedText: stripped.trim(),
+      isShortLine: hasTemporal && stripped.trim().length <= 30,
+    }
+  }
+
+  // --- 行级 diff（用于结构变化检测）---
 
   interface LineDiff {
     type: "added" | "removed" | "changed"
@@ -180,16 +214,16 @@ export const CloudCodePromptWatchdog = async (input: any) => {
 
   // --- 状态存储 ---
 
-  // 频繁变化判定阈值：某行累计变化达到此次数后才开始替换为占位符
-  // BUG GUARD: 阈值不能设为 1，否则退化为"首次变化即替换"，丧失一次性变化的容忍能力
-  const DYNAMIC_CHANGE_THRESHOLD = 2
+  // === 全局：按 modelID 记录已通知的行签名，相同签名不重复通知 ===
+  // BUG GUARD: key 是 "行内容 trim 后的签名" 而非行号，因为行号可能因上方行增删而漂移，
+  // 用内容签名更稳定（同一时间行内容结构不变，只有具体数值变化，trim 后签名一致）
+  // 短行（删除）和长行（告警）使用不同前缀避免签名碰撞：
+  //   短行签名: "removed:" + signature
+  //   长行签名: "temporal-alert:" + signature
+  const notifiedTemporalLines: Map<string, Set<string>> = new Map()
 
-  // === 全局基线（按 modelID，跨 session 共享）===
-  // 同一个 model 的 prompt 结构基本一致，跨 session 只有日期/时间等动态内容会变
-  // 用全局基线来检测这些跨 session 的动态变化
-  const globalPrevRawLines: Map<string, string[]> = new Map()
-  const globalLineChangeCount: Map<string, Map<number, number>> = new Map()
-  const globalNotifiedDynamic: Map<string, Set<number>> = new Map()
+  // === 全局基线（按 modelID，用于 diff 过滤后的 prompt）===
+  const globalPrevFilteredText: Map<string, string> = new Map()
 
   // === Per-session 状态（用于 Report 统计）===
   // trackKey = "sessionID:modelID"
@@ -197,6 +231,8 @@ export const CloudCodePromptWatchdog = async (input: any) => {
   const lastHashMap: Map<string, string> = new Map()
   const callCountMap: Map<string, number> = new Map()
   const totalDiffLinesMap: Map<string, number> = new Map()
+  const removedLineCountMap: Map<string, number> = new Map()
+  const temporalAlertCountMap: Map<string, number> = new Map()
   const diffSummaryMap: Map<string, string[]> = new Map()
 
   // 用于结束报告：记录每个 session 涉及的所有 trackKey
@@ -205,6 +241,20 @@ export const CloudCodePromptWatchdog = async (input: any) => {
 
   const buildTrackKey = (sessionID: string, modelID: string): string => {
     return `${sessionID}:${modelID}`
+  }
+
+  /**
+   * 生成时间行的内容签名：去除具体时间数值后的结构指纹
+   * 例如 "  Current date: Thu, Feb 26, 2026" → "current date:"
+   * 这样即使日期变了，签名仍然相同，避免重复通知
+   */
+  const temporalLineSignature = (line: string): string => {
+    let sig = line
+    for (const pattern of temporalPatterns) {
+      pattern.lastIndex = 0
+      sig = sig.replace(pattern, "")
+    }
+    return sig.trim().toLowerCase()
   }
 
   const sendSessionReport = async (sessionID: string) => {
@@ -223,19 +273,21 @@ export const CloudCodePromptWatchdog = async (input: any) => {
         const modelID = key.split(":").slice(1).join(":")
         const calls = callCountMap.get(key) || 0
         const totalDiffLines = totalDiffLinesMap.get(key) || 0
+        const removedCount = removedLineCountMap.get(key) || 0
+        const alertCount = temporalAlertCountMap.get(key) || 0
         const firstHash = firstHashMap.get(key) || "?"
         const lastHash = lastHashMap.get(key) || "?"
         const drifted = firstHash !== lastHash
         const summaries = diffSummaryMap.get(key) || []
-        const dynamicCount = globalLineChangeCount.get(modelID)?.size || 0
 
-        const statusEmoji = totalDiffLines === 0 && dynamicCount === 0 ? "✅" : drifted ? "⚠️" : "🔄"
+        const statusEmoji = totalDiffLines === 0 && removedCount === 0 && alertCount === 0 ? "✅" : drifted ? "⚠️" : "🔄"
         const statusParts: string[] = []
         if (totalDiffLines > 0) statusParts.push(`${totalDiffLines} 行结构变化`)
-        if (dynamicCount > 0) statusParts.push(`${dynamicCount} 行动态过滤`)
+        if (removedCount > 0) statusParts.push(`${removedCount} 行时间过滤`)
+        if (alertCount > 0) statusParts.push(`${alertCount} 行时间告警`)
         const statusText = statusParts.length > 0 ? statusParts.join(", ") : "无变化"
 
-        lines.push(`${statusEmoji} ${escapeMarkdown(modelID)} ×${calls} ${drifted ? `\'${firstHash}\'→\'${lastHash}\'` : `\'${firstHash}\'`} ${statusText}`)
+        lines.push(`${statusEmoji} ${escapeMarkdown(modelID)} ×${calls} ${drifted ? `'${firstHash}'→'${lastHash}'` : `'${firstHash}'`} ${statusText}`)
 
         if (summaries.length > 0) {
           const shown = summaries.slice(-3)
@@ -298,155 +350,201 @@ export const CloudCodePromptWatchdog = async (input: any) => {
         const rawText = output.system.join("\n")
         const rawLines = rawText.split("\n")
 
-        // === 全局基线对比（跨 session 检测动态变化）===
-        const globalPrev = globalPrevRawLines.get(modelID)
-        if (!globalLineChangeCount.has(modelID)) {
-          globalLineChangeCount.set(modelID, new Map())
-        }
-        const gChangeCounts = globalLineChangeCount.get(modelID)!
-        if (!globalNotifiedDynamic.has(modelID)) {
-          globalNotifiedDynamic.set(modelID, new Set())
-        }
-        const gNotified = globalNotifiedDynamic.get(modelID)!
+        // === 步骤 1：扫描所有行，区分短行（删除）和长行（告警）===
+        const removedLines: { lineNum: number; content: string; signature: string }[] = []
+        // 长行告警：包含时间/日期/时间戳但剩余文本 > 30 字符，不删除但需告警
+        const temporalAlertLines: { lineNum: number; content: string; signature: string; matchedFragments: string[] }[] = []
 
-        // 构建输出行：默认保持原样，只有全局达到阈值的动态行才替换
-        const outputLines = [...rawLines]
-        const structuralDiffs: LineDiff[] = []
-        const newlyConfirmedDynamic: { lineNum: number; oldLine: string; newLine: string; neutralized: string }[] = []
-        const pendingDynamic: { lineNum: number; count: number }[] = []
+        const filteredLines = rawLines.filter((line, i) => {
+          const analysis = analyzeTemporalLine(line)
+          if (!analysis.hasTemporal) return true // 无时间内容，保留
 
-        if (globalPrev !== undefined) {
-          // 有全局基线：逐行对比
-          const maxLen = Math.max(globalPrev.length, rawLines.length)
-          for (let i = 0; i < maxLen; i++) {
-            const oldLine = i < globalPrev.length ? globalPrev[i] : undefined
-            const newLine = i < rawLines.length ? rawLines[i] : undefined
-            const lineNum = i + 1
-
-            if (oldLine === newLine) continue
-
-            // 行增删：属于结构变化
-            if (oldLine === undefined || newLine === undefined) {
-              if (oldLine === undefined) {
-                structuralDiffs.push({ type: "added", lineNum, newLine })
-              } else {
-                structuralDiffs.push({ type: "removed", lineNum, oldLine })
-              }
-              continue
-            }
-
-            // 行内容变化：neutralize 后对比
-            const neutralizedOld = neutralizeLine(oldLine)
-            const neutralizedNew = neutralizeLine(newLine)
-
-            if (neutralizedOld === neutralizedNew) {
-              // 动态微变：日期/时间/数字变了但结构不变，累计全局变化次数
-              const prevCount = gChangeCounts.get(lineNum) || 0
-              const newCount = prevCount + 1
-              gChangeCounts.set(lineNum, newCount)
-
-              if (newCount >= DYNAMIC_CHANGE_THRESHOLD) {
-                // BUG GUARD: 达到阈值才替换为占位符，确认是频繁变化而非一次性变化
-                outputLines[i] = neutralizedNew
-                if (newCount === DYNAMIC_CHANGE_THRESHOLD) {
-                  newlyConfirmedDynamic.push({ lineNum, oldLine, newLine, neutralized: neutralizedNew })
-                }
-              } else {
-                // 未达阈值：保持原样，可能只是一次性变化
-                pendingDynamic.push({ lineNum, count: newCount })
-              }
-            } else {
-              // 真正的结构变化
-              structuralDiffs.push({ type: "changed", lineNum, oldLine, newLine })
-            }
+          const signature = temporalLineSignature(line)
+          if (analysis.isShortLine) {
+            // 剩余 ≤ 30 字符：删除该行
+            removedLines.push({
+              lineNum: i + 1,
+              content: line.trim(),
+              signature,
+            })
+            return false
+          } else {
+            // 剩余 > 30 字符：保留该行，但记录为告警
+            temporalAlertLines.push({
+              lineNum: i + 1,
+              content: line.trim(),
+              signature,
+              matchedFragments: analysis.matchedFragments,
+            })
+            return true
           }
-        } else {
-          // 全局首次见到这个 model，已达阈值的行仍需替换（处理进程重启不会发生，但逻辑完整性）
-        }
+        })
 
-        // 更新全局基线
-        globalPrevRawLines.set(modelID, rawLines)
+        // 将过滤后的内容写回 output.system
+        output.system.splice(0, output.system.length, filteredLines.join("\n"))
 
-        // 将替换后的内容写回 output.system
-        output.system.splice(0, output.system.length, outputLines.join("\n"))
-
-        // === Per-session 统计（用于 Report）===
+        // === 步骤 2：统计 + hash ===
+        const filteredText = filteredLines.join("\n")
+        const filteredHash = simpleHash(filteredText)
         const isFirstCallInSession = !firstHashMap.has(trackKey)
-        const neutralizedLines = outputLines.map(neutralizeLine)
-        const fullHash = simpleHash(neutralizedLines.join("\n"))
         if (isFirstCallInSession) {
-          firstHashMap.set(trackKey, fullHash)
+          firstHashMap.set(trackKey, filteredHash)
         }
-        lastHashMap.set(trackKey, fullHash)
+        lastHashMap.set(trackKey, filteredHash)
+
+        // 累计删除行数和告警行数（用于 Report）
+        const prevRemoved = removedLineCountMap.get(trackKey) || 0
+        removedLineCountMap.set(trackKey, prevRemoved + removedLines.length)
+        const prevAlert = temporalAlertCountMap.get(trackKey) || 0
+        temporalAlertCountMap.set(trackKey, prevAlert + temporalAlertLines.length)
+
+        // 初始化已通知集合
+        if (!notifiedTemporalLines.has(modelID)) {
+          notifiedTemporalLines.set(modelID, new Set())
+        }
+        const notifiedSet = notifiedTemporalLines.get(modelID)!
 
         // 首次见到这个 model 且本 session 首次调用 → 发送 Active 通知
-        if (globalPrev === undefined && isFirstCallInSession) {
+        const isGlobalFirstForModel = !globalPrevFilteredText.has(modelID)
+        if (isGlobalFirstForModel && isFirstCallInSession) {
           const lineCount = rawLines.length
-          const lines = [
-            `\ud83d\udc15 *Prompt Watchdog* ${tag}`,
-            `\ud83d\udce6 ${escapeMarkdown(modelID)} (${rawText.length} chars / ${lineCount} lines)`,
-            `\ud83d\udd11 \'${fullHash}\'`,
+          const msgLines = [
+            `🐕 *Prompt Watchdog* ${tag}`,
+            `📦 ${escapeMarkdown(modelID)} (${rawText.length} chars / ${lineCount} lines)`,
+            `🔑 '${filteredHash}'`,
           ]
-          await send(lines.join("\n"))
-          // 全局首次无基线可比，直接返回
+
+          // Active 通知中列出被删除的行（带行号+内容）
+          if (removedLines.length > 0) {
+            msgLines.push(`🧹 ${removedLines.length} 行时间数据已过滤:`)
+            const shown = removedLines.slice(0, 5)
+            for (const r of shown) {
+              msgLines.push(`  L${r.lineNum}: ${escapeMarkdown(truncate(r.content, 80))}`)
+            }
+            if (removedLines.length > 5) {
+              msgLines.push(`  ... 及其他 ${removedLines.length - 5} 行`)
+            }
+          }
+
+          // Active 通知中列出长行告警（带行号+时间内容+上下文）
+          if (temporalAlertLines.length > 0) {
+            msgLines.push(`🔍 ${temporalAlertLines.length} 行含时间数据(未删除):`)
+            const shown = temporalAlertLines.slice(0, 3)
+            for (const a of shown) {
+              msgLines.push(`  L${a.lineNum} [${escapeMarkdown(a.matchedFragments.join(", "))}]: ${escapeMarkdown(truncate(a.content, 80))}`)
+            }
+            if (temporalAlertLines.length > 3) {
+              msgLines.push(`  ... 及其他 ${temporalAlertLines.length - 3} 行`)
+            }
+          }
+
+          await send(msgLines.join("\n"))
+
+          // 记录已通知的签名（短行和长行分别用前缀区分）
+          for (const r of removedLines) {
+            notifiedSet.add(`removed:${r.signature}`)
+          }
+          for (const a of temporalAlertLines) {
+            notifiedSet.add(`temporal-alert:${a.signature}`)
+          }
+
+          // 存储基线
+          globalPrevFilteredText.set(modelID, filteredText)
           return
         }
-        // === 通知逻辑 ===
 
-        // 1. 动态微变通知：只有刚达到全局阈值且未通知过的行才发送
-        const toNotify = newlyConfirmedDynamic.filter((d) => !gNotified.has(d.lineNum))
-        if (toNotify.length > 0) {
-          for (const d of toNotify) {
-            gNotified.add(d.lineNum)
+        // === 步骤 3：删除行通知（只通知新出现的、未通知过的）===
+        // BUG GUARD: 用内容签名（而非行号）判断是否已通知，因为行号可能因 prompt 上方内容变化而漂移
+        const newRemovedToNotify = removedLines.filter((r) => !notifiedSet.has(`removed:${r.signature}`))
+        if (newRemovedToNotify.length > 0) {
+          for (const r of newRemovedToNotify) {
+            notifiedSet.add(`removed:${r.signature}`)
           }
 
-          const lines = [
+          const msgLines = [
             `🐕 *Prompt Watchdog* ${tag}`,
-            `🧹 ${escapeMarkdown(modelID)}: ${toNotify.length} 行频繁变化已替换为占位符 (≥${DYNAMIC_CHANGE_THRESHOLD}次)`,
+            `🧹 ${escapeMarkdown(modelID)}: ${newRemovedToNotify.length} 行时间数据已过滤:`,
           ]
-          const shown = toNotify.slice(0, 5)
-          for (const d of shown) {
-            lines.push(`  L${d.lineNum}: ${escapeMarkdown(truncate(d.newLine.trim(), 60))} → \'...\'`)
+          const shown = newRemovedToNotify.slice(0, 5)
+          for (const r of shown) {
+            msgLines.push(`  L${r.lineNum}: ${escapeMarkdown(truncate(r.content, 80))}`)
           }
-          if (toNotify.length > 5) {
-            lines.push(`  ... 及其他 ${toNotify.length - 5} 处`)
-          }
-          if (pendingDynamic.length > 0) {
-            lines.push(`🕒 ${pendingDynamic.length} 行观察中`)
+          if (newRemovedToNotify.length > 5) {
+            msgLines.push(`  ... 及其他 ${newRemovedToNotify.length - 5} 行`)
           }
 
-          await send(lines.join("\n"))
+          await send(msgLines.join("\n"))
         }
 
-        // 2. 结构变化告警
-        if (structuralDiffs.length > 0) {
-          const prevTotal = totalDiffLinesMap.get(trackKey) || 0
-          totalDiffLinesMap.set(trackKey, prevTotal + structuralDiffs.length)
-
-          const blocks = groupDiffsIntoBlocks(structuralDiffs)
-
-          if (!diffSummaryMap.has(trackKey)) {
-            diffSummaryMap.set(trackKey, [])
+        // === 步骤 3b：长行告警（包含时间但未删除，只通知新出现的）===
+        const newAlertToNotify = temporalAlertLines.filter((a) => !notifiedSet.has(`temporal-alert:${a.signature}`))
+        if (newAlertToNotify.length > 0) {
+          for (const a of newAlertToNotify) {
+            notifiedSet.add(`temporal-alert:${a.signature}`)
           }
-          const summaries = diffSummaryMap.get(trackKey)!
 
-          const alertLines = [
-            `🐕 *Prompt Watchdog Alert* ${tag}`,
-            `⚠️ ${escapeMarkdown(modelID)} #${callCount}: ${structuralDiffs.length} 行结构变化`,
+          const msgLines = [
+            `🐕 *Prompt Watchdog* ${tag}`,
+            `🔍 ${escapeMarkdown(modelID)}: ${newAlertToNotify.length} 行含时间数据(未删除):`,
           ]
-
-          const shownBlocks = blocks.slice(0, 5)
-          for (const block of shownBlocks) {
-            const summary = summarizeBlock(block)
-            summaries.push(summary)
-            alertLines.push(`  • ${escapeMarkdown(summary)}`)
+          const shown = newAlertToNotify.slice(0, 5)
+          for (const a of shown) {
+            // 格式：行号 [匹配到的时间片段]: 前后部分内容
+            msgLines.push(`  L${a.lineNum} [${escapeMarkdown(a.matchedFragments.join(", "))}]: ${escapeMarkdown(truncate(a.content, 80))}`)
           }
-          if (blocks.length > 5) {
-            alertLines.push(`  ... 及其他 ${blocks.length - 5} 个区块`)
+          if (newAlertToNotify.length > 5) {
+            msgLines.push(`  ... 及其他 ${newAlertToNotify.length - 5} 行`)
           }
 
-          await send(alertLines.join("\n"))
+          await send(msgLines.join("\n"))
         }
+
+        // 调试日志：记录删除和告警详情
+        if (debugLogPath && (removedLines.length > 0 || temporalAlertLines.length > 0)) {
+          const fs = await import("fs")
+          const ts = new Date().toISOString()
+          const removedDetail = removedLines.map((r) => `  REMOVED L${r.lineNum}: ${r.content} [sig=${r.signature}]`).join("\n")
+          const alertDetail = temporalAlertLines.map((a) => `  ALERT L${a.lineNum} [${a.matchedFragments.join(", ")}]: ${a.content} [sig=${a.signature}]`).join("\n")
+          fs.appendFileSync(debugLogPath, `\n[TEMPORAL] ${ts} model=${modelID} removed=${removedLines.length}(new=${newRemovedToNotify.length}) alerts=${temporalAlertLines.length}(new=${newAlertToNotify.length})\n${removedDetail}\n${alertDetail}\n`)
+        }
+
+        // === 步骤 4：结构变化检测（对过滤后的文本做 diff）===
+        const prevFiltered = globalPrevFilteredText.get(modelID)
+        if (prevFiltered !== undefined && prevFiltered !== filteredText) {
+          const structuralDiffs = diffLines(prevFiltered, filteredText)
+
+          if (structuralDiffs.length > 0) {
+            const prevTotal = totalDiffLinesMap.get(trackKey) || 0
+            totalDiffLinesMap.set(trackKey, prevTotal + structuralDiffs.length)
+
+            const blocks = groupDiffsIntoBlocks(structuralDiffs)
+
+            if (!diffSummaryMap.has(trackKey)) {
+              diffSummaryMap.set(trackKey, [])
+            }
+            const summaries = diffSummaryMap.get(trackKey)!
+
+            const alertLines = [
+              `🐕 *Prompt Watchdog Alert* ${tag}`,
+              `⚠️ ${escapeMarkdown(modelID)} #${callCount}: ${structuralDiffs.length} 行结构变化`,
+            ]
+
+            const shownBlocks = blocks.slice(0, 5)
+            for (const block of shownBlocks) {
+              const summary = summarizeBlock(block)
+              summaries.push(summary)
+              alertLines.push(`  • ${escapeMarkdown(summary)}`)
+            }
+            if (blocks.length > 5) {
+              alertLines.push(`  ... 及其他 ${blocks.length - 5} 个区块`)
+            }
+
+            await send(alertLines.join("\n"))
+          }
+        }
+
+        // 更新全局基线（过滤后的文本）
+        globalPrevFilteredText.set(modelID, filteredText)
       } catch {}
     },
   }
