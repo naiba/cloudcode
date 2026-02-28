@@ -17,6 +17,8 @@
 - **暗色/亮色主题** — 跟随系统偏好，支持手动切换
 - **反向代理** — 通过 `/instance/{id}/` 路径访问每个实例的 Web UI
 - **容器自动更新** — 每次启动时自动更新 OpenCode + Oh My OpenCode
+- **System Prompt 监控** — 自动检测并过滤系统提示词中注入的时间行（日期/时间戳），结构变化时通过 Telegram 发送 unified diff 告警
+- **内置 Cloudflare Tunnel** — 每个容器预装 `cloudflared`，一条命令即可将容器内服务暴露到公网，无需端口转发
 
 ## 快速开始
 
@@ -73,6 +75,33 @@ docker compose up -d
 - `CC_TELEGRAM_CHAT_ID` — 目标聊天/群组 ID
 
 内置插件监听 `session.idle`（任务完成）和 `session.error`（会话报错）事件。
+
+### Cloudflare Tunnel（暴露内网服务）
+
+每个容器预装了 `cloudflared`。在容器终端中将本地服务暴露到公网：
+
+```bash
+# 在容器终端中，暴露本地服务（如端口 3000）
+cloudflared tunnel --url http://localhost:3000
+```
+
+通过 [TryCloudflare](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) 创建免费临时隧道，输出公网 `*.trycloudflare.com` URL。无需账号或额外配置。
+
+如需持久隧道和自定义域名，参见 [Cloudflare Tunnel 文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)。
+
+### System Prompt 监控
+
+内置插件监控系统提示词的变化：
+
+- 自动过滤系统提示词中的时间行（日期、时间、时间戳），减少噪音
+- 检测提示词结构变化，通过 Telegram 发送 unified diff 告警
+- Session 结束时发送监控总结报告
+
+相关环境变量：
+
+- `CC_PROMPT_WATCHDOG_DISABLED` — 设为 `"true"` 禁用
+- `CC_WATCHDOG_DEBUG_LOG` — 设为文件路径开启调试日志（如 `/tmp/watchdog.log`）
+- `CC_INSTANCE_NAME` — 通知中显示的实例标识
 
 ## 技术栈
 

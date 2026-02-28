@@ -17,6 +17,8 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 - **Dark/Light theme** — Follows system preference with manual toggle
 - **Reverse proxy** — Access each instance's Web UI through a single entry point (`/instance/{id}/`)
 - **Auto-updating containers** — OpenCode + Oh My OpenCode updated on each container start
+- **System prompt watchdog** — Automatically detects and filters temporal lines (dates/times) injected into system prompts; alerts on structural prompt changes via Telegram with unified diff
+- **Cloudflare Tunnel built-in** — Each container ships with `cloudflared` pre-installed; expose any local service to the public internet with a single command, no port forwarding needed
 
 ## Quick Start
 
@@ -73,6 +75,33 @@ Set these environment variables in Settings to receive notifications:
 - `CC_TELEGRAM_CHAT_ID` — Target chat/group ID
 
 The built-in plugin listens for `session.idle` (task completed) and `session.error` events.
+
+### Cloudflare Tunnel (Exposing Local Services)
+
+Each container has `cloudflared` pre-installed. To expose a local service running inside a container to the public internet:
+
+```bash
+# Inside the container terminal, expose a local service (e.g. port 3000)
+cloudflared tunnel --url http://localhost:3000
+```
+
+This creates a free temporary tunnel via [TryCloudflare](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) and outputs a public `*.trycloudflare.com` URL. No account or configuration required.
+
+For persistent tunnels with custom domains, see the [Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/).
+
+### System Prompt Watchdog
+
+A built-in plugin monitors system prompt changes across sessions:
+
+- Automatically filters temporal lines (dates, times, timestamps) from system prompts to reduce noise
+- Detects structural prompt changes and sends unified diff alerts via Telegram
+- Sends monitoring summary reports at session end
+
+Configure via environment variables:
+
+- `CC_PROMPT_WATCHDOG_DISABLED` — Set to `"true"` to disable
+- `CC_WATCHDOG_DEBUG_LOG` — Set to a file path to enable debug logging (e.g. `/tmp/watchdog.log`)
+- `CC_INSTANCE_NAME` — Instance identifier shown in notifications
 
 ## Tech Stack
 

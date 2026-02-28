@@ -31,6 +31,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update \
     && apt-get install -y gh
 
+
+# Install cloudflared (Cloudflare Tunnel, for exposing local services to the internet)
+RUN curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+    | tee /usr/share/keyrings/cloudflare-main.gpg > /dev/null \
+    && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+    | tee /etc/apt/sources.list.d/cloudflared.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y cloudflared
+
 # Install Go
 ENV GO_VERSION=1.23.6
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \

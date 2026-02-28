@@ -184,6 +184,8 @@ cookie 是全局的（`Path=/`），同时只能有一个活跃的 Web UI 实例
 - 容器资源限制：2GB 内存、2 CPU
 - base 镜像基于 Ubuntu 24.04，包含 Go 1.23、Node 22、Bun
 - `oh-my-opencode` 通过 `bun install -g` 全局安装（非 git clone）
+- 容器内预装 `cloudflared`，可通过 Cloudflare Tunnel 将容器内服务暴露到公网
+- 容器内 cloudflared 使用说明通过 `_cloudcode-instructions.md` 注入，启动时自动写入
 
 ## 修改代码时注意
 
