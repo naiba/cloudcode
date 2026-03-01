@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -187,13 +188,19 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse resource limits: 0 = unlimited
+	memoryMB, _ := strconv.Atoi(r.FormValue("memory_mb"))
+	cpuCores, _ := strconv.ParseFloat(r.FormValue("cpu_cores"), 64)
+
 	inst := &store.Instance{
-		ID:      uuid.New().String()[:8],
-		Name:    name,
-		Status:  "created",
-		Port:    port,
-		WorkDir: "/root",
-		EnvVars: make(map[string]string),
+		ID:       uuid.New().String()[:8],
+		Name:     name,
+		Status:   "created",
+		Port:     port,
+		WorkDir:  "/root",
+		EnvVars:  make(map[string]string),
+		MemoryMB: memoryMB,
+		CPUCores: cpuCores,
 	}
 
 	if err := h.store.Create(inst); err != nil {

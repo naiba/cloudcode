@@ -646,6 +646,23 @@ main.container {
     letter-spacing: -0.01em;
 }
 .form-group { margin-bottom: var(--space-lg); }
+.form-row { display: flex; gap: var(--space-lg); }
+.form-row .form-group { flex: 1; margin-bottom: 0; }
+.form-group select {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.88rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.form-group select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+}
 .form-group label {
     display: block;
     font-size: 0.84rem;

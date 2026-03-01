@@ -155,10 +155,7 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 			RestartPolicy: container.RestartPolicy{
 				Name: "unless-stopped",
 			},
-			Resources: container.Resources{
-				Memory:   2 * 1024 * 1024 * 1024,
-				NanoCPUs: 2 * 1e9,
-			},
+			Resources: inst.ContainerResources(),
 		},
 		NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{

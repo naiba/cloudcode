@@ -181,7 +181,7 @@ cookie 是全局的（`Path=/`），同时只能有一个活跃的 Web UI 实例
 
 - 所有实例共享全局配置，容器内修改会影响所有实例（bind mount 读写）
 - 端口池范围 10000-10100，每个实例分配一个
-- 容器资源限制：2GB 内存、2 CPU
+- 容器资源限制：创建时可配置内存（MB）和 CPU（核数），0 表示不限制，默认 2GB/2核
 - base 镜像基于 Ubuntu 24.04，包含 Go 1.23、Node 22、Bun
 - `oh-my-opencode` 通过 `bun install -g` 全局安装（非 git clone）
 - 容器内预装 `cloudflared`，可通过 Cloudflare Tunnel 将容器内服务暴露到公网

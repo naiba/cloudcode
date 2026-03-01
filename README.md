@@ -10,6 +10,7 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 ## Features
 
 - **Multi-instance management** — Create, start, stop, restart, and delete OpenCode instances
+- **Configurable resource limits** — Set memory and CPU limits per instance at creation time, or leave unlimited
 - **Session isolation** — Each instance has its own workspace; auth tokens are shared globally
 - **Shared global config** — Manage `opencode.jsonc`, `AGENTS.md`, auth tokens, custom commands, agents, skills, and plugins from a unified Settings UI
 - **skills.sh integration** — Install [skills.sh](https://skills.sh) skills inside any container, shared across all instances

@@ -10,6 +10,7 @@
 ## 功能特性
 
 - **多实例管理** — 创建、启动、停止、重启、删除 OpenCode 实例
+- **可配置资源限制** — 创建实例时可设置内存和 CPU 限制，也可不限制
 - **Session 隔离** — 每个实例拥有独立的工作空间，认证令牌全局共享
 - **共享全局配置** — 在 Settings 页面统一管理 `opencode.jsonc`、`AGENTS.md`、认证令牌、自定义命令、Agent、Skills 和 Plugins
 - **skills.sh 集成** — 在任意容器内安装 [skills.sh](https://skills.sh) 技能，所有实例共享
