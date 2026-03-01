@@ -411,19 +411,20 @@ main.container {
 /* --- 8. Instance Grid & Cards --- */
 .instance-grid {
     display: grid;
-    /* 卡片最小宽度需容纳 running 状态 6 个按钮不换行 */
-    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-    gap: var(--space-lg);
+    /* 卡片最小宽度需容纳 running 状态 6 个按钮不换行（一行 3 个卡片） */
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: var(--space-md);
 }
 .instance-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    padding: var(--space-lg);
+    padding: var(--space-md);
     transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
     display: flex;
     flex-direction: column;
     animation: cardIn 0.35s var(--ease-out) both;
+    gap: var(--space-sm);
 }
 .instance-card:hover {
     border-color: var(--border-hover);
@@ -434,31 +435,31 @@ main.container {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-md);
 }
 .instance-card-body {
     display: flex;
-    gap: var(--space-xl);
-    margin-bottom: var(--space-lg);
-    padding-bottom: var(--space-md);
+    gap: var(--space-md);
+    align-items: center;
+    padding-bottom: var(--space-sm);
     border-bottom: 1px solid var(--border-subtle);
 }
+/* card-meta 已废弃，保留以兼容可能的扩展 */
 .instance-card-meta {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
 }
 .instance-card-label {
-    font-size: 0.68rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
 }
 .instance-card-footer {
     display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
+    gap: 4px;
+    flex-wrap: nowrap;
     align-items: center;
     margin-top: auto;
 }
@@ -1084,8 +1085,8 @@ button[disabled] .spinner { display: inline-block; }
 @media (max-width: 480px) {
     .container { padding: 0 var(--space-md); }
     .card { padding: var(--space-md); }
-    .instance-card { padding: var(--space-md); }
-    .btn-sm { padding: 4px 8px; font-size: 0.72rem; }
+    .instance-card { padding: var(--space-sm) var(--space-md); }
+    .btn-sm { padding: 3px 7px; font-size: 0.7rem; }
     .actions { gap: 4px; }
     .form-actions { flex-wrap: wrap; }
     .detail-grid { gap: var(--space-sm); }

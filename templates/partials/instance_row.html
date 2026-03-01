@@ -5,19 +5,13 @@
         <span class="badge {{statusBadge .Status}}">{{.Status}}</span>
     </div>
     <div class="instance-card-body">
-        <div class="instance-card-meta">
-            <span class="instance-card-label">Port</span>
-            <span class="mono">{{.Port}}</span>
-        </div>
-        <div class="instance-card-meta">
-            <span class="instance-card-label">Created</span>
-            <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
-        </div>
+        <span class="instance-card-label">:{{.Port}}</span>
+        <span class="instance-card-label">{{.CreatedAt.Format "01-02 15:04"}}</span>
     </div>
     <div class="instance-card-footer">
         {{if eq .Status "running"}}
         <a href="javascript:void(0)" onclick="switchInstance('{{.ID}}')" class="btn btn-sm btn-success">Open</a>
-        <a href="/instances/{{.ID}}/terminal" target="_blank" class="btn btn-sm btn-secondary" title="Terminal">Terminal</a>
+        <a href="/instances/{{.ID}}/terminal" target="_blank" class="btn btn-sm btn-secondary" title="Terminal">Term</a>
         <button hx-post="/instances/{{.ID}}/stop"
                 hx-target="#instance-{{.ID}}"
                 hx-swap="outerHTML"
@@ -42,7 +36,7 @@
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
                 hx-confirm="Are you sure you want to delete instance '{{.Name}}'? This will destroy the container."
-                class="btn btn-sm btn-danger"><span class="spinner"></span>Delete</button>
+                class="btn btn-sm btn-danger"><span class="spinner"></span>Del</button>
     </div>
 </div>
 {{end}}
