@@ -411,7 +411,8 @@ main.container {
 /* --- 8. Instance Grid & Cards --- */
 .instance-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    /* 卡片最小宽度需容纳 running 状态 6 个按钮不换行 */
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
     gap: var(--space-lg);
 }
 .instance-card {
