@@ -5,7 +5,7 @@
         <span class="badge {{statusBadge .Status}}">{{.Status}}</span>
     </div>
     <div class="instance-card-body">
-        <span class="instance-card-label">:{{.Port}}</span>
+        <span class="instance-card-label mono">{{.ID}}</span>
         <span class="instance-card-label">{{if .MemoryMB}}{{.MemoryMB}}MB{{else}}∞{{end}} / {{if .CPUCores}}{{.CPUCores}}C{{else}}∞{{end}}</span>
         <span class="instance-card-label">{{.CreatedAt.Format "01-02 15:04"}}</span>
     </div>

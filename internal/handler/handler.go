@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"strconv"
 	"time"
@@ -158,8 +161,32 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleNewInstanceForm(w http.ResponseWriter, r *http.Request) {
+	var memInfo runtime.MemStats
+	runtime.ReadMemStats(&memInfo)
+	// TotalMemoryMB: 宿主机总物理内存，用于创建实例页面展示参考
+	totalMemMB := int(memInfo.Sys / 1024 / 1024)
+	// sysconf 获取物理内存更准确，但 MemStats.Sys 作为 Go 进程视角的系统内存已足够参考
+	if f, err := os.Open("/proc/meminfo"); err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if kb, err := strconv.Atoi(fields[1]); err == nil {
+						totalMemMB = kb / 1024
+					}
+				}
+				break
+			}
+		}
+	}
+
 	h.render(w, "new_instance", map[string]interface{}{
-		"Title": "CloudCode - New Instance",
+		"Title":         "CloudCode - New Instance",
+		"TotalMemoryMB": totalMemMB,
+		"TotalCPUCores": runtime.NumCPU(),
 	})
 }
 
