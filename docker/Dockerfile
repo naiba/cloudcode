@@ -68,8 +68,8 @@ RUN bun install -g @fission-ai/openspec@latest
 # --with-deps auto-installs required shared libraries (libatk, libnss3, libgbm, etc.)
 RUN npx playwright install --with-deps chromium
 # Symlink chromium binary to well-known paths so tools can find it without PLAYWRIGHT_BROWSERS_PATH
-# The glob handles version-numbered directories (e.g. chromium-1208/) that change across Playwright releases
-RUN CHROME_BIN=$(ls /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1) \
+# find handles both chrome-linux/ (arm64) and chrome-linux64/ (amd64) directory names across architectures
+RUN CHROME_BIN=$(find /root/.cache/ms-playwright/chromium-* -name chrome -type f | head -1) \
     && ln -sf "$CHROME_BIN" /usr/bin/chromium-browser \
     && ln -sf "$CHROME_BIN" /usr/bin/chrome
 
