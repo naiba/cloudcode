@@ -64,6 +64,15 @@ RUN bun install -g oh-my-opencode-linux-arm64@latest || true
 # Install OpenSpec (spec-driven development for AI coding assistants)
 RUN bun install -g @fission-ai/openspec@latest
 
+# Install Playwright chromium with all system dependencies (for browser automation skills)
+# --with-deps auto-installs required shared libraries (libatk, libnss3, libgbm, etc.)
+RUN npx playwright install --with-deps chromium
+# Symlink chromium binary to well-known paths so tools can find it without PLAYWRIGHT_BROWSERS_PATH
+# The glob handles version-numbered directories (e.g. chromium-1208/) that change across Playwright releases
+RUN CHROME_BIN=$(ls /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1) \
+    && ln -sf "$CHROME_BIN" /usr/bin/chromium-browser \
+    && ln -sf "$CHROME_BIN" /usr/bin/chrome
+
 # Create workspace directory
 RUN mkdir -p /workspace /root/.opencode /root/.config/opencode /root/.local/share/opencode /root/.agents/skills
 
