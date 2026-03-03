@@ -104,6 +104,16 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS settings (
+			key   TEXT NOT NULL PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 // Create inserts a new instance.
@@ -280,4 +290,18 @@ func (s *Store) ListTopicSessionsByInstance(instanceID string) ([]*TopicSession,
 		sessions = append(sessions, &ts)
 	}
 	return sessions, rows.Err()
+}
+
+// GetSetting retrieves a value from the settings KV table.
+// Returns empty string if key not found.
+func (s *Store) GetSetting(key string) string {
+	var val string
+	_ = s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&val)
+	return val
+}
+
+// SetSetting upserts a key-value pair in the settings table.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?`, key, value, value)
+	return err
 }

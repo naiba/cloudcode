@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/go-telegram/bot"
@@ -68,22 +69,35 @@ func (b *Bot) WatchdogTopicID() int {
 	return b.watchdog
 }
 
-// setupWatchdogTopic creates or finds the "🐕 Prompt Watchdog" topic and pins it.
+// setupWatchdogTopic ensures a single "🐕 Prompt Watchdog" topic exists.
+// 先从 DB 读取已持久化的 threadID，避免每次启动重复创建 topic。
 func (b *Bot) setupWatchdogTopic(ctx context.Context) {
-	// Try to find existing watchdog topic by checking pinned message or stored state.
-	// Since Telegram doesn't have a "list topics" API, we create it and handle duplicates.
+	// 从 DB 恢复已有的 watchdog topic ID
+	if saved := b.store.GetSetting("watchdog_topic_id"); saved != "" {
+		if id, err := strconv.Atoi(saved); err == nil && id > 0 {
+			b.watchdog = id
+			log.Printf("[telegram] watchdog topic restored from DB: threadID=%d", id)
+			return
+		}
+	}
+
+	// DB 中没有 → 创建新 topic
 	topic, err := b.bot.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
 		ChatID: b.chatID,
 		Name:   watchdogTopicName,
 	})
 	if err != nil {
-		// Topic might already exist or bot lacks permission — log and continue
 		log.Printf("[telegram] failed to create watchdog topic: %v", err)
 		return
 	}
 
 	b.watchdog = topic.MessageThreadID
 	log.Printf("[telegram] watchdog topic created: threadID=%d", b.watchdog)
+
+	// 持久化到 DB，下次启动不再重复创建
+	if err := b.store.SetSetting("watchdog_topic_id", strconv.Itoa(topic.MessageThreadID)); err != nil {
+		log.Printf("[telegram] failed to persist watchdog topic ID: %v", err)
+	}
 }
 
 // defaultHandler routes all incoming updates.
