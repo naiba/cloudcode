@@ -382,6 +382,7 @@ func (sm *StreamManager) handlePartUpdated(
 	// Append cursor indicator while streaming
 	displayText := text + " ▌"
 
+	log.Printf("[telegram/stream] sending draft to topic %d: %d chars", topicID, len(text))
 	sm.bot.SendMessageDraft(ctx, &bot.SendMessageDraftParams{
 		ChatID:          sm.chatID,
 		MessageThreadID: topicID,
@@ -434,10 +435,14 @@ func (sm *StreamManager) sendFinalMessage(ctx context.Context, topicID int, text
 		text = text[:4000] + "\n\n_(truncated)_"
 	}
 
-	sm.bot.SendMessage(ctx, &bot.SendMessageParams{
+	log.Printf("[telegram/stream] sending final message to topic %d: %d chars", topicID, len(text))
+	_, err := sm.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:          sm.chatID,
 		MessageThreadID: topicID,
 		Text:            text,
 		ParseMode:       models.ParseModeMarkdown,
 	})
+	if err != nil {
+		log.Printf("[telegram/stream] sendFinalMessage failed: %v", err)
+	}
 }

@@ -290,6 +290,7 @@ func (h *Handler) handleSessionMessage(ctx context.Context, msg *models.Message)
 	}
 
 	// Start SSE stream for this session (idempotent — won't duplicate)
+	log.Printf("[telegram] forwarding message to session %s on instance %s (port %d)", ts.SessionID[:8], inst.ID, inst.Port)
 	b.streams.EnsureStream(ctx, ts, inst)
 
 	// Send message to opencode
@@ -315,9 +316,11 @@ func (h *Handler) handleSessionMessage(ctx context.Context, msg *models.Message)
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[telegram] prompt_async rejected: status=%d body=%s", resp.StatusCode, string(body))
 		h.reply(ctx, msg, fmt.Sprintf("❌ opencode rejected prompt (status %d): %s", resp.StatusCode, string(body)))
 		return
 	}
+	log.Printf("[telegram] prompt_async accepted for session %s (status %d)", ts.SessionID[:8], resp.StatusCode)
 }
 
 // handlePermissionCallback processes allow/deny permission responses.
