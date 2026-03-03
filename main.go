@@ -75,9 +75,12 @@ func main() {
 
 	h := handler.New(db, dm, rp, cfgMgr, tmpl)
 
-	// Start Telegram bot if configured (CC_TELEGRAM_BOT_TOKEN + CC_TELEGRAM_CHAT_ID)
-	if botToken := os.Getenv("CC_TELEGRAM_BOT_TOKEN"); botToken != "" {
-		if chatIDStr := os.Getenv("CC_TELEGRAM_CHAT_ID"); chatIDStr != "" {
+	// Start Telegram bot if configured (reads from env.json, same config injected into containers)
+	if cfgMgr != nil {
+		envVars, _ := cfgMgr.GetEnvVars()
+		botToken := envVars["CC_TELEGRAM_BOT_TOKEN"]
+		chatIDStr := envVars["CC_TELEGRAM_CHAT_ID"]
+		if botToken != "" && chatIDStr != "" {
 			chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
 			if err != nil {
 				log.Printf("Warning: invalid CC_TELEGRAM_CHAT_ID %q: %v", chatIDStr, err)
@@ -93,12 +96,12 @@ func main() {
 					log.Printf("Warning: failed to start Telegram bot: %v", err)
 				} else {
 					go tgBot.Start(tgCtx)
-					// Inject watchdog topic thread ID into global env vars so containers pick it up
-					if wdID := tgBot.WatchdogTopicID(); wdID != 0 && cfgMgr != nil {
-						envVars, _ := cfgMgr.GetEnvVars()
+					// Inject watchdog topic thread ID into env.json so containers pick it up
+					if wdID := tgBot.WatchdogTopicID(); wdID != 0 {
 						envVars["CC_TELEGRAM_WATCHDOG_THREAD_ID"] = strconv.Itoa(wdID)
 						_ = cfgMgr.SetEnvVars(envVars)
 					}
+					h.SetTelegramBot(tgBot)
 				}
 			}
 		}

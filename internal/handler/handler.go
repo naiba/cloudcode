@@ -31,6 +31,7 @@ type Handler struct {
 	config   *config.Manager
 	tmpls    map[string]*template.Template
 	portPool *PortPool
+	tgBot    interface{ SyncTopics(ctx context.Context) string } // optional Telegram bot for topic sync
 }
 
 // PortPool allocates ports for new instances.
@@ -97,6 +98,11 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 	return h
 }
 
+// SetTelegramBot injects the Telegram bot for topic sync functionality.
+func (h *Handler) SetTelegramBot(bot interface{ SyncTopics(ctx context.Context) string }) {
+	h.tgBot = bot
+}
+
 // RegisterRoutes sets up all HTTP routes.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Static files
@@ -112,6 +118,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /settings/dir-file", h.handleSaveDirFile)
 	mux.HandleFunc("DELETE /settings/dir-file", h.handleDeleteDirFile)
 	mux.HandleFunc("DELETE /settings/agents-skill", h.handleDeleteAgentsSkill)
+	mux.HandleFunc("POST /settings/telegram/sync", h.handleSyncTelegramTopics)
 
 	// Instance CRUD (HTMX endpoints)
 	mux.HandleFunc("POST /instances", h.handleCreateInstance)
@@ -611,12 +618,13 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 	agentsSkills, _ := h.config.ListAgentsSkills()
 
 	data := map[string]interface{}{
-		"Title":        "CloudCode - Settings",
-		"EnvVars":      envVars,
-		"Files":        editableFiles,
-		"Dirs":         dirs,
-		"AgentsSkills": agentsSkills,
-		"ConfigDir":    h.config.RootDir(),
+		"Title":             "CloudCode - Settings",
+		"EnvVars":           envVars,
+		"Files":             editableFiles,
+		"Dirs":              dirs,
+		"AgentsSkills":      agentsSkills,
+		"ConfigDir":         h.config.RootDir(),
+		"TelegramConnected": h.tgBot != nil,
 	}
 	h.render(w, "settings", data)
 }
@@ -759,6 +767,16 @@ func (h *Handler) handleDeleteAgentsSkill(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("HX-Redirect", "/settings")
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) handleSyncTelegramTopics(w http.ResponseWriter, r *http.Request) {
+	if h.tgBot == nil {
+		respondError(w, "Telegram bot not configured. Set CC_TELEGRAM_BOT_TOKEN and CC_TELEGRAM_CHAT_ID in environment variables.")
+		return
+	}
+	result := h.tgBot.SyncTopics(r.Context())
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, template.HTMLEscapeString(result))
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data interface{}) {

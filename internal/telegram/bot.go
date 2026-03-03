@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 
@@ -128,4 +129,99 @@ func (b *Bot) defaultHandler(ctx context.Context, _ *bot.Bot, update *models.Upd
 	if msg.MessageThreadID != 0 {
 		b.handler.handleSessionMessage(ctx, msg)
 	}
+}
+
+// SyncTopics synchronizes Telegram topics with opencode sessions across all running instances.
+// Returns a human-readable result string.
+func (b *Bot) SyncTopics(ctx context.Context) string {
+	instances := b.getInstances()
+	var running []*store.Instance
+	for _, inst := range instances {
+		if inst.Status == "running" {
+			running = append(running, inst)
+		}
+	}
+
+	if len(running) == 0 {
+		return "❌ No running instances"
+	}
+
+	var sb strings.Builder
+	var removedCount, createdCount int
+
+	for _, inst := range running {
+		activeSessions, err := b.handler.listOpencodeSessions(ctx, inst)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("⚠️ %s: failed to list sessions: %v\n", inst.Name, err))
+			continue
+		}
+
+		activeSet := make(map[string]*opencodeSession, len(activeSessions))
+		for i := range activeSessions {
+			activeSet[activeSessions[i].ID] = &activeSessions[i]
+		}
+
+		// Remove topics for deleted sessions
+		topicSessions, _ := b.store.ListTopicSessionsByInstance(inst.ID)
+		for _, ts := range topicSessions {
+			if ts.SessionID == "" {
+				continue
+			}
+			if _, exists := activeSet[ts.SessionID]; !exists {
+				b.bot.DeleteForumTopic(ctx, &bot.DeleteForumTopicParams{
+					ChatID:          b.chatID,
+					MessageThreadID: ts.TopicID,
+				})
+				_ = b.store.DeleteTopicSession(ts.TopicID)
+				removedCount++
+			}
+		}
+
+		// Create topics for sessions without one
+		mappedSessions := make(map[string]bool)
+		topicSessions, _ = b.store.ListTopicSessionsByInstance(inst.ID)
+		for _, ts := range topicSessions {
+			if ts.SessionID != "" {
+				mappedSessions[ts.SessionID] = true
+			}
+		}
+
+		for sessID, sess := range activeSet {
+			if mappedSessions[sessID] {
+				continue
+			}
+			topicTitle := sess.Title
+			if topicTitle == "" {
+				if len(sessID) >= 8 {
+					topicTitle = sessID[:8]
+				} else {
+					topicTitle = sessID
+				}
+			}
+			topicTitle = fmt.Sprintf("[%s] %s", inst.Name, topicTitle)
+
+			topic, err := b.bot.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
+				ChatID: b.chatID,
+				Name:   truncateTopicName(topicTitle),
+			})
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("⚠️ Failed to create topic for session %s: %v\n", sessID[:8], err))
+				continue
+			}
+
+			ts := &store.TopicSession{
+				TopicID:    topic.MessageThreadID,
+				InstanceID: inst.ID,
+				SessionID:  sessID,
+			}
+			_ = b.store.CreateTopicSession(ts)
+			createdCount++
+		}
+	}
+
+	result := fmt.Sprintf("✅ Sync complete: %d topics removed, %d topics created", removedCount, createdCount)
+	if sb.Len() > 0 {
+		result += "\n\n" + sb.String()
+	}
+	return result
 }
