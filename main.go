@@ -98,12 +98,6 @@ func main() {
 				} else {
 					go tgBot.Start(tgCtx)
 					log.Printf("Telegram bot started")
-					// Inject watchdog topic thread ID into env.json so containers pick it up
-					if wdID := tgBot.WatchdogTopicID(); wdID != 0 {
-						envVars["CC_TELEGRAM_WATCHDOG_THREAD_ID"] = strconv.Itoa(wdID)
-						_ = cfgMgr.SetEnvVars(envVars)
-					}
-					h.SetTelegramBot(tgBot)
 				}
 			}
 		} else {

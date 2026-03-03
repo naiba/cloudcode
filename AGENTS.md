@@ -18,8 +18,8 @@ internal/
   docker/manager.go         Docker 容器生命周期（创建/启动/停止/删除）
   handler/handler.go        所有 HTTP handler（页面渲染 + HTMX API）
   proxy/proxy.go            动态反向代理到各实例的 opencode web UI
-  store/store.go            SQLite 持久化（实例 CRUD + topic-session 映射）
-  telegram/                 Telegram Bot 集成（forum topic 模式双向控制 opencode）
+  store/store.go            SQLite 持久化（实例 CRUD + settings KV）
+  telegram/                 Telegram Bot 集成（单窗口模式双向控制 opencode）
 docker/
   Dockerfile                base 镜像（Ubuntu + Go + Node + Bun + OpenCode）
   entrypoint.sh             容器启动脚本（更新依赖 + 启动 opencode web）
@@ -102,13 +102,9 @@ go build ./...
 
 内置 plugin 通过 `//go:embed` 嵌入二进制，每次启动强制写入 `plugins/` 目录（覆盖旧版本）：
 
-#### `_cloudcode-telegram.ts` — 会话通知
-- 监听 `session.idle` 和 `session.error` 事件，通过 Telegram Bot API 发送通知
-- 读取 `CC_TELEGRAM_BOT_TOKEN` 和 `CC_TELEGRAM_CHAT_ID` 环境变量，未配置则静默跳过
-
 #### `_cloudcode-prompt-watchdog.ts` — System Prompt 监控
 
-通过 `experimental.chat.system.transform` hook 拦截 system prompt，自动过滤时间行并检测结构变化。通知使用 git unified diff 格式。
+通过 `experimental.chat.system.transform` hook 拦截 system prompt，自动过滤时间行并检测结构变化。通知发送到 Telegram 默认窗口。
 
 **核心机制：**
 - `analyzeTemporalLine()` 判断每行是否包含日期/时间/时间戳（多组正则按优先级排列）
@@ -165,33 +161,9 @@ grep -E 'DIFF|Alert' /tmp/wt.log
 
 要点：修改文件后必须等 bun install 完成再输入；bun install 后用 `Escape` 清空输入框残留；用 log 内容轮询判断就绪状态。
 
-## 反向代理架构
-
-Referer-based routing，**不改写**响应内容（无 HTML/CSS/JS 路径重写）。
-
-1. **入口代理** `/instance/{id}/` — strip prefix 后转发，设置 `_cc_inst` cookie 记录实例 ID
-2. **Catch-all fallback** `"/"` — 注册在所有平台路由之后
-   - 优先从 `Referer` 提取 `/instance/{id}/` 中的 ID
-   - 回退到 `_cc_inst` cookie（覆盖 SPA pushState 后 Referer 丢失的场景）
-   - 原始路径直接转发，不修改
-3. **无 Referer 且无 cookie** → 404
-
-cookie 是全局的（`Path=/`），同时只能有一个活跃的 Web UI 实例，打开新实例会覆盖旧的 cookie。
-
-## 关键约束
-
-- 所有实例共享全局配置，容器内修改会影响所有实例（bind mount 读写）
-- 端口池范围 10000-10100，每个实例分配一个
-- 容器资源限制：创建时可配置内存（MB）和 CPU（核数），0 表示不限制，默认 2GB/2核
-- base 镜像基于 Ubuntu 24.04，包含 Go 1.23、Node 22、Bun
-- `oh-my-opencode` 通过 `bun install -g` 全局安装（非 git clone）
-- 容器内预装 `cloudflared`，可通过 Cloudflare Tunnel 将容器内服务暴露到公网
-- 容器内预装 Playwright Chromium（`~/.cache/ms-playwright/chromium-*/chrome-linux/chrome`），已符号链接到 `/usr/bin/chromium-browser` 和 `/usr/bin/chrome`
-- 容器内 cloudflared、chromium 使用说明通过 `_cloudcode-instructions.md` 注入，启动时自动写入
-
 ## Telegram Bot 集成
 
-平台内置 Telegram Bot，通过 forum topic 模式双向控制 opencode 实例。
+平台内置 Telegram Bot，通过单窗口模式双向控制 opencode 实例。所有消息在默认聊天窗口收发（无 forum topic）。
 
 ### 架构
 
@@ -203,37 +175,43 @@ CloudCode 平台 (Go, internal/telegram/)
 容器内 opencode HTTP API (:10000-10100)
 ```
 
-### Topic 结构
+### 交互模式
 
-- **🐕 Prompt Watchdog**（置顶）— system prompt 变化告警（由容器内 watchdog plugin 发送）
-- **session topics** — 每个 opencode session 一个，完整闭环：用户消息 → 流式回复 → 完成/错误/permission 通知
+- 用户通过 `/cc_new` 创建 session，通过 `/cc_select` 选择已有 session
+- 选中 session 后，普通文本消息直接转发到 opencode 的 `prompt_async` API
+- opencode 的流式回复通过 SSE 监听，使用 `sendMessageDraft` 实时推送到 Telegram
+- 完成后用 `sendMessage` 发送最终消息
+- `/cc_exit` 退出当前 session，`/cc_abort` 中止当前任务
 
 ### 命令
 
-- `/new [instance-name]` — 创建 session + topic（多实例时弹出 inline keyboard 选择）
-- `/abort` — 在 session topic 中使用，中止当前 session
-- `/list` — 列出所有活跃的 topic-session 映射
+- `/start` — 显示帮助信息
+- `/cc_new` — 创建新 session（多实例时弹出 inline keyboard 选择）
+- `/cc_select` — 选择已有 session
+- `/cc_list` — 列出当前活跃 session 信息
+- `/cc_abort` — 中止当前 session 任务
+- `/cc_exit` — 退出当前 session（断开 SSE）
 
 ### 环境变量
 
-- `CC_TELEGRAM_BOT_TOKEN` — Bot API token（通过 env.json 或环境变量配置）
+- `CC_TELEGRAM_BOT_TOKEN` — Bot API token（通过 Settings 页面 env.json 配置）
 - `CC_TELEGRAM_CHAT_ID` — 授权的 chat ID，只有此 chat 可交互
-- `CC_TELEGRAM_WATCHDOG_THREAD_ID` — 由平台自动注入容器，watchdog plugin 用此 thread ID 发送通知到 Prompt Watchdog topic
 
-### 流式消息
+### SSE 流式消息
 
-使用 `sendMessageDraft` API 将 opencode 的流式输出实时推送到 Telegram topic，完成后用 `sendMessage` 发送最终消息。
-SSE 连接按需建立（有活跃 session 时连，idle 后断）。
+- SSE 连接按需建立（选中 session 时连，exit 后断）
+- opencode SSE 事件格式：data-only（无 `event:` 行），JSON `{type, properties}`
+- 关键事件：`message.part.updated`（流式文本）、`session.idle`（完成）、`session.error`（错误）、`permission.updated`（权限请求）
+- `sendMessageDraft` 用于流式更新，受 Telegram 速率限制自动降速
 
 ### 数据库
 
-- `topic_sessions` 表：`topic_id` (PK) ↔ `instance_id` + `session_id`
-- 平台重启后映射保留，但 SSE 连接需要用户发消息时重建
+- `settings` 表：通用 KV 存储
+- 活跃 session 状态保存在内存中（`Bot.active`），平台重启后需用户重新 `/cc_select`
 
 ### 依赖
 
-- `github.com/go-telegram/bot` — Go Telegram Bot SDK（支持 Bot API 9.5，sendMessageDraft + forum topics）
-
+- `github.com/go-telegram/bot` — Go Telegram Bot SDK（支持 Bot API 9.5，sendMessageDraft）
 ## 修改代码时注意
 
 - 改 Go 代码后运行 `go vet ./...` 和 `go build ./...`

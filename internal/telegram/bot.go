@@ -2,33 +2,37 @@ package telegram
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/naiba/cloudcode/internal/store"
 )
 
-const watchdogTopicName = "🐕 Prompt Watchdog"
+// activeSession 当前对接的 opencode session
+type activeSession struct {
+	instanceID string
+	sessionID  string
+}
 
-// Bot wraps a Telegram bot that bridges forum topics to opencode sessions.
+// Bot wraps a Telegram bot that bridges chat messages to opencode sessions.
+// 单窗口模式：所有消息在默认聊天窗口，通过命令切换活跃 session。
 type Bot struct {
-	bot      *bot.Bot
-	store    *store.Store
-	chatID   int64 // only this chat is authorized to interact
-	streams  *StreamManager
-	handler  *Handler
-	watchdog int // watchdog topic thread ID (0 = not yet created)
+	bot   *bot.Bot
+	store *store.Store
+
+	chatID  int64 // 只有此 chat 有权交互
+	streams *StreamManager
+
+	mu     sync.Mutex
+	active *activeSession // 当前对接的 session，nil 表示未选择
 
 	getInstances func() []*store.Instance
 }
 
 // New creates and configures a Telegram bot.
-// botToken and chatID come from CC_TELEGRAM_BOT_TOKEN / CC_TELEGRAM_CHAT_ID.
-// getInstances returns running instances with port info for opencode API calls.
 func New(ctx context.Context, botToken string, chatID int64, s *store.Store, getInstances func() []*store.Instance) (*Bot, error) {
 	b := &Bot{
 		store:        s,
@@ -37,223 +41,131 @@ func New(ctx context.Context, botToken string, chatID int64, s *store.Store, get
 	}
 
 	b.streams = NewStreamManager(s)
-	b.handler = NewHandler(b)
 
 	tgBot, err := bot.New(botToken,
 		bot.WithDefaultHandler(b.defaultHandler),
-		bot.WithCallbackQueryDataHandler("new:", bot.MatchTypePrefix, b.handler.handleNewCallback),
-		bot.WithCallbackQueryDataHandler("perm:", bot.MatchTypePrefix, b.handler.handlePermissionCallback),
+		bot.WithCallbackQueryDataHandler("new:", bot.MatchTypePrefix, b.handleNewCallback),
+		bot.WithCallbackQueryDataHandler("sel:", bot.MatchTypePrefix, b.handleSelectCallback),
+		bot.WithCallbackQueryDataHandler("perm:", bot.MatchTypePrefix, b.handlePermissionCallback),
 	)
 	if err != nil {
 		return nil, err
 	}
 	b.bot = tgBot
-
-	// Assign bot reference to stream manager after creation
 	b.streams.bot = tgBot
 	b.streams.chatID = chatID
 
-	b.setupWatchdogTopic(ctx)
+	// 注册命令列表到 Telegram，让客户端自动展示命令菜单
+	b.registerCommands(ctx)
+
 	return b, nil
 }
 
-// Start begins long polling in a goroutine. Blocks until ctx is cancelled.
+// Start begins long polling. Blocks until ctx is cancelled.
 func (b *Bot) Start(ctx context.Context) {
-	log.Printf("[telegram] bot starting long polling, chatID=%d", b.chatID)
+	log.Printf("[telegram] bot starting, chatID=%d", b.chatID)
 	b.bot.Start(ctx)
 }
 
-// WatchdogTopicID returns the thread ID of the pinned "Prompt Watchdog" topic.
-// Returns 0 if not yet created.
-func (b *Bot) WatchdogTopicID() int {
-	return b.watchdog
+// SetActive 设置当前活跃 session
+func (b *Bot) SetActive(instanceID, sessionID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.active = &activeSession{instanceID: instanceID, sessionID: sessionID}
 }
 
-// setupWatchdogTopic ensures a single "🐕 Prompt Watchdog" topic exists.
-// 先从 DB 读取已持久化的 threadID，避免每次启动重复创建 topic。
-func (b *Bot) setupWatchdogTopic(ctx context.Context) {
-	// 从 DB 恢复已有的 watchdog topic ID
-	if saved := b.store.GetSetting("watchdog_topic_id"); saved != "" {
-		if id, err := strconv.Atoi(saved); err == nil && id > 0 {
-			b.watchdog = id
-			log.Printf("[telegram] watchdog topic restored from DB: threadID=%d", id)
-			return
-		}
+// ClearActive 清除活跃 session 并停止 SSE
+func (b *Bot) ClearActive() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.active != nil {
+		b.streams.Stop(b.active.sessionID)
+		b.active = nil
 	}
+}
 
-	// DB 中没有 → 创建新 topic
-	topic, err := b.bot.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
-		ChatID: b.chatID,
-		Name:   watchdogTopicName,
+// GetActive 返回当前活跃 session（可能为 nil）
+func (b *Bot) GetActive() *activeSession {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.active == nil {
+		return nil
+	}
+	cp := *b.active
+	return &cp
+}
+
+// registerCommands 通过 SetMyCommands API 推送命令列表到 Telegram
+func (b *Bot) registerCommands(ctx context.Context) {
+	_, err := b.bot.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: []models.BotCommand{
+			{Command: "cc_new", Description: "Create a new session"},
+			{Command: "cc_select", Description: "Select an existing session"},
+			{Command: "cc_list", Description: "List all sessions"},
+			{Command: "cc_abort", Description: "Abort current session"},
+			{Command: "cc_exit", Description: "Disconnect from session"},
+			{Command: "start", Description: "Show help"},
+		},
 	})
 	if err != nil {
-		log.Printf("[telegram] failed to create watchdog topic: %v", err)
-		return
-	}
-
-	b.watchdog = topic.MessageThreadID
-	log.Printf("[telegram] watchdog topic created: threadID=%d", b.watchdog)
-
-	// 持久化到 DB，下次启动不再重复创建
-	if err := b.store.SetSetting("watchdog_topic_id", strconv.Itoa(topic.MessageThreadID)); err != nil {
-		log.Printf("[telegram] failed to persist watchdog topic ID: %v", err)
+		log.Printf("[telegram] failed to register commands: %v", err)
 	}
 }
 
-// defaultHandler routes all incoming updates.
+// defaultHandler routes all incoming messages.
 func (b *Bot) defaultHandler(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	if update.Message == nil {
-		log.Printf("[telegram] update without Message: %+v", update)
 		return
 	}
 
 	msg := update.Message
-	log.Printf("[telegram] message: chat=%d thread=%d text=%q", msg.Chat.ID, msg.MessageThreadID, msg.Text)
 
-	// Auth check: only respond to the configured chat
+	// 鉴权：只响应配置的 chat
 	if msg.Chat.ID != b.chatID {
-		log.Printf("[telegram] ignoring message from chat %d (authorized: %d)", msg.Chat.ID, b.chatID)
 		return
 	}
 
-	// Route commands
+	// 路由命令（支持 /cc_xxx 和 /cc-xxx 两种格式，以及 @botname 后缀）
 	if msg.Text != "" && strings.HasPrefix(msg.Text, "/") {
 		cmd := strings.SplitN(msg.Text, " ", 2)[0]
-		// Strip @botname suffix from command (e.g. /new@mybot → /new)
 		if i := strings.Index(cmd, "@"); i > 0 {
 			cmd = cmd[:i]
 		}
+		// 统一 - 和 _ 的处理
+		cmd = strings.ReplaceAll(cmd, "-", "_")
 		switch cmd {
-		case "/new":
-			b.handler.handleNew(ctx, msg)
+		case "/cc_new":
+			b.handleNew(ctx, msg)
 			return
-		case "/abort":
-			b.handler.handleAbort(ctx, msg)
+		case "/cc_select":
+			b.handleSelect(ctx, msg)
 			return
-		case "/list":
-			b.handler.handleList(ctx, msg)
+		case "/cc_list":
+			b.handleList(ctx, msg)
 			return
-		case "/help", "/start":
-			b.handler.handleHelp(ctx, msg)
+		case "/cc_abort":
+			b.handleAbort(ctx, msg)
 			return
-		case "/sync":
-			b.handler.handleSync(ctx, msg)
+		case "/cc_exit":
+			b.handleExit(ctx, msg)
+			return
+		case "/start", "/cc_help":
+			b.handleHelp(ctx, msg)
 			return
 		}
 	}
 
-	// Regular message in a session topic → forward to opencode
-	if msg.MessageThreadID != 0 {
-		b.handler.handleSessionMessage(ctx, msg)
+	// 非命令消息 → 转发到活跃 session
+	if msg.Text != "" {
+		b.handleSessionMessage(ctx, msg)
 	}
 }
 
-// SyncTopics synchronizes Telegram topics with opencode sessions across all running instances.
-// Returns a human-readable result string.
-func (b *Bot) SyncTopics(ctx context.Context) string {
-	instances := b.getInstances()
-	var running []*store.Instance
-	for _, inst := range instances {
-		if inst.Status == "running" {
-			running = append(running, inst)
-		}
-	}
-
-	if len(running) == 0 {
-		return "❌ No running instances"
-	}
-
-	var sb strings.Builder
-	var removedCount, createdCount int
-
-	for _, inst := range running {
-		activeSessions, err := b.handler.listOpencodeSessions(ctx, inst)
-		if err != nil {
-			sb.WriteString(fmt.Sprintf("⚠️ %s: failed to list sessions: %v\n", inst.Name, err))
-			continue
-		}
-
-		activeSet := make(map[string]*opencodeSession, len(activeSessions))
-		for i := range activeSessions {
-			activeSet[activeSessions[i].ID] = &activeSessions[i]
-		}
-
-		// Remove topics for deleted sessions
-		topicSessions, _ := b.store.ListTopicSessionsByInstance(inst.ID)
-		for _, ts := range topicSessions {
-			if ts.SessionID == "" {
-				continue
-			}
-			if _, exists := activeSet[ts.SessionID]; !exists {
-				b.bot.DeleteForumTopic(ctx, &bot.DeleteForumTopicParams{
-					ChatID:          b.chatID,
-					MessageThreadID: ts.TopicID,
-				})
-				_ = b.store.DeleteTopicSession(ts.TopicID)
-				removedCount++
-			}
-		}
-
-		// Create topics for sessions without one
-		mappedSessions := make(map[string]bool)
-		topicSessions, _ = b.store.ListTopicSessionsByInstance(inst.ID)
-		for _, ts := range topicSessions {
-			if ts.SessionID != "" {
-				mappedSessions[ts.SessionID] = true
-			}
-		}
-
-		for sessID, sess := range activeSet {
-			if mappedSessions[sessID] {
-				continue
-			}
-			topicTitle := sess.Title
-			if topicTitle == "" {
-				if len(sessID) >= 8 {
-					topicTitle = sessID[:8]
-				} else {
-					topicTitle = sessID
-				}
-			}
-			topicTitle = fmt.Sprintf("[%s] %s", inst.Name, topicTitle)
-
-			topic, err := b.bot.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
-				ChatID: b.chatID,
-				Name:   truncateTopicName(topicTitle),
-			})
-			if err != nil {
-				sb.WriteString(fmt.Sprintf("⚠️ Failed to create topic for session %s: %v\n", sessID[:8], err))
-				continue
-			}
-
-			ts := &store.TopicSession{
-				TopicID:    topic.MessageThreadID,
-				InstanceID: inst.ID,
-				SessionID:  sessID,
-			}
-			_ = b.store.CreateTopicSession(ts)
-			createdCount++
-
-			// 创建 topic 后必须发一条消息，否则 Telegram 不会在聊天列表中显示该 topic
-			b.bot.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID:          b.chatID,
-				MessageThreadID: topic.MessageThreadID,
-				Text:            fmt.Sprintf("Session `%s` linked to this topic.\nSend a message to start chatting.", sessID[:8]),
-				ParseMode:       models.ParseModeMarkdown,
-			})
-		}
-	}
-
-	result := fmt.Sprintf("✅ Sync complete: %d topics removed, %d topics created", removedCount, createdCount)
-	if sb.Len() > 0 {
-		result += "\n\n" + sb.String()
-	}
-
-	// 在 General topic 发送同步结果，方便通过 Web UI 触发时也能在 Telegram 里看到
+// send 发送消息到默认窗口
+func (b *Bot) send(ctx context.Context, text string) {
 	b.bot.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: b.chatID,
-		Text:   result,
+		ChatID:    b.chatID,
+		Text:      text,
+		ParseMode: models.ParseModeMarkdown,
 	})
-
-	return result
 }

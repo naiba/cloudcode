@@ -47,24 +47,6 @@
     {{end}}
 </div>
 
-<div class="card">
-    <div class="header-row" style="margin-bottom:12px">
-        <h2>Telegram Bot</h2>
-        {{if .TelegramConnected}}
-        <span class="badge badge-success">Connected</span>
-        {{else}}
-        <span class="badge badge-secondary">Not Configured</span>
-        {{end}}
-    </div>
-    <p class="hint">Set <code>CC_TELEGRAM_BOT_TOKEN</code> and <code>CC_TELEGRAM_CHAT_ID</code> in Environment Variables above, then restart the platform.</p>
-    {{if .TelegramConnected}}
-    <div id="telegram-sync-result"></div>
-    <button class="btn btn-primary" hx-post="/settings/telegram/sync" hx-target="#telegram-sync-result" hx-swap="innerHTML">
-        Sync Telegram Topics
-    </button>
-    <p class="hint" style="margin-top:8px">Removes topics for deleted sessions and creates topics for sessions without one.</p>
-    {{end}}
-</div>
 
 {{range .Dirs}}
 <div class="card">

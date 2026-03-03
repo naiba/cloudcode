@@ -3,7 +3,6 @@ package telegram
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,21 +15,6 @@ import (
 	"github.com/go-telegram/bot/models"
 	"github.com/naiba/cloudcode/internal/store"
 )
-
-// Handler processes Telegram commands and forwards messages to opencode.
-type Handler struct {
-	parent *Bot
-}
-
-// NewHandler creates a Handler tied to the parent Bot.
-func NewHandler(parent *Bot) *Handler {
-	return &Handler{parent: parent}
-}
-
-// opencodeURL builds the internal Docker network URL for an opencode instance.
-func opencodeURL(instanceID string, port int, path string) string {
-	return fmt.Sprintf("http://cloudcode-%s:%d%s", instanceID, port, path)
-}
 
 // --- opencode API response types ---
 
@@ -48,33 +32,42 @@ type opencodeMessageBody struct {
 	Parts []opencodeMessagePart `json:"parts"`
 }
 
-// handleNew processes /new [instance-name] command.
-// Creates an opencode session and a forum topic mapped to it.
-func (h *Handler) handleNew(ctx context.Context, msg *models.Message) {
-	b := h.parent
+// opencodeURL builds the internal Docker network URL for an opencode instance.
+func opencodeURL(instanceID string, port int, path string) string {
+	return fmt.Sprintf("http://cloudcode-%s:%d%s", instanceID, port, path)
+}
 
-	// Parse optional instance name from command args
+// --- Command Handlers ---
+
+const helpText = `*CloudCode Bot*
+
+/cc\_new \[instance\] — Create a new session
+/cc\_select — Select an existing session
+/cc\_list — List all sessions
+/cc\_abort — Abort current session
+/cc\_exit — Disconnect from session
+
+Send any message to chat with the active session.`
+
+func (b *Bot) handleHelp(ctx context.Context, msg *models.Message) {
+	b.send(ctx, helpText)
+}
+
+// handleNew 创建新 session 并自动对接
+func (b *Bot) handleNew(ctx context.Context, msg *models.Message) {
 	args := ""
 	if parts := strings.SplitN(msg.Text, " ", 2); len(parts) > 1 {
 		args = strings.TrimSpace(parts[1])
 	}
 
-	instances := b.getInstances()
-	var running []*store.Instance
-	for _, inst := range instances {
-		if inst.Status == "running" {
-			running = append(running, inst)
-		}
-	}
-
+	running := b.runningInstances()
 	if len(running) == 0 {
-		h.reply(ctx, msg, "❌ No running instances")
+		b.send(ctx, "❌ No running instances")
 		return
 	}
 
 	var target *store.Instance
 	if args != "" {
-		// Find by name
 		for _, inst := range running {
 			if inst.Name == args {
 				target = inst
@@ -82,13 +75,13 @@ func (h *Handler) handleNew(ctx context.Context, msg *models.Message) {
 			}
 		}
 		if target == nil {
-			h.reply(ctx, msg, fmt.Sprintf("❌ Instance %q not found or not running", args))
+			b.send(ctx, fmt.Sprintf("❌ Instance %q not found or not running", args))
 			return
 		}
 	} else if len(running) == 1 {
 		target = running[0]
 	} else {
-		// Multiple running instances — show inline keyboard
+		// 多实例 → inline keyboard 选择
 		var rows [][]models.InlineKeyboardButton
 		for _, inst := range running {
 			rows = append(rows, []models.InlineKeyboardButton{
@@ -96,9 +89,8 @@ func (h *Handler) handleNew(ctx context.Context, msg *models.Message) {
 			})
 		}
 		b.bot.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:          b.chatID,
-			MessageThreadID: msg.MessageThreadID,
-			Text:            "Choose an instance:",
+			ChatID: b.chatID,
+			Text:   "Choose an instance:",
 			ReplyMarkup: &models.InlineKeyboardMarkup{
 				InlineKeyboard: rows,
 			},
@@ -106,15 +98,12 @@ func (h *Handler) handleNew(ctx context.Context, msg *models.Message) {
 		return
 	}
 
-	h.createSessionAndTopic(ctx, msg.MessageThreadID, target)
+	b.createSessionAndActivate(ctx, target)
 }
 
-// handleNewCallback processes the inline keyboard callback for /new.
-func (h *Handler) handleNewCallback(ctx context.Context, _ *bot.Bot, update *models.Update) {
-	b := h.parent
+// handleNewCallback 处理 /cc-new 的 inline keyboard 回调
+func (b *Bot) handleNewCallback(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	cb := update.CallbackQuery
-
-	// Auth check
 	if cb.Message.Message != nil && cb.Message.Message.Chat.ID != b.chatID {
 		return
 	}
@@ -130,170 +119,215 @@ func (h *Handler) handleNewCallback(ctx context.Context, _ *bot.Bot, update *mod
 		return
 	}
 
-	threadID := 0
-	if cb.Message.Message != nil {
-		threadID = cb.Message.Message.MessageThreadID
-	}
-
-	h.createSessionAndTopic(ctx, threadID, inst)
+	b.createSessionAndActivate(ctx, inst)
 }
 
-// createSessionAndTopic creates an opencode session, a forum topic, and stores the mapping.
-func (h *Handler) createSessionAndTopic(ctx context.Context, replyThreadID int, inst *store.Instance) {
-	b := h.parent
-
-	// Create opencode session
-	sess, err := h.createOpencodeSession(ctx, inst, "")
+// createSessionAndActivate 创建 session 并设为活跃
+func (b *Bot) createSessionAndActivate(ctx context.Context, inst *store.Instance) {
+	sess, err := b.createOpencodeSession(ctx, inst)
 	if err != nil {
-		h.send(ctx, replyThreadID, fmt.Sprintf("❌ Failed to create session: %v", err))
+		b.send(ctx, fmt.Sprintf("❌ Failed to create session: %v", err))
 		return
 	}
 
-	topicTitle := sess.Title
-	if topicTitle == "" {
-		topicTitle = "New Session"
-	}
-	// Prefix with instance name for clarity
-	topicTitle = fmt.Sprintf("[%s] %s", inst.Name, topicTitle)
+	// 停止旧 session 的 SSE
+	b.ClearActive()
+	b.SetActive(inst.ID, sess.ID)
 
-	// Create forum topic
-	topic, err := b.bot.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
+	title := sess.Title
+	if title == "" {
+		title = sess.ID[:8]
+	}
+
+	b.send(ctx, fmt.Sprintf("✅ Session created and activated\n\n*Instance:* %s\n*Session:* `%s`\n*Title:* %s\n\nSend a message to start chatting.", inst.Name, sess.ID[:8], title))
+
+	// 启动 SSE 流
+	b.streams.EnsureStream(inst, sess.ID)
+}
+
+// handleSelect 列出所有 session 供用户选择
+func (b *Bot) handleSelect(ctx context.Context, msg *models.Message) {
+	running := b.runningInstances()
+	if len(running) == 0 {
+		b.send(ctx, "❌ No running instances")
+		return
+	}
+
+	var rows [][]models.InlineKeyboardButton
+	for _, inst := range running {
+		sessions, err := b.listOpencodeSessions(ctx, inst)
+		if err != nil {
+			continue
+		}
+		for _, sess := range sessions {
+			title := sess.Title
+			if title == "" {
+				title = sess.ID[:8]
+			}
+			label := fmt.Sprintf("[%s] %s", inst.Name, title)
+			if len(label) > 64 {
+				label = label[:61] + "..."
+			}
+			rows = append(rows, []models.InlineKeyboardButton{
+				{Text: label, CallbackData: fmt.Sprintf("sel:%s:%s", inst.ID, sess.ID)},
+			})
+		}
+	}
+
+	if len(rows) == 0 {
+		b.send(ctx, "No sessions found. Use /cc\\_new to create one.")
+		return
+	}
+
+	b.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: b.chatID,
-		Name:   truncateTopicName(topicTitle),
+		Text:   "Select a session:",
+		ReplyMarkup: &models.InlineKeyboardMarkup{
+			InlineKeyboard: rows,
+		},
 	})
-	if err != nil {
-		h.send(ctx, replyThreadID, fmt.Sprintf("❌ Failed to create topic: %v", err))
-		return
-	}
-
-	// Store mapping
-	ts := &store.TopicSession{
-		TopicID:    topic.MessageThreadID,
-		InstanceID: inst.ID,
-		SessionID:  sess.ID,
-	}
-	if err := b.store.CreateTopicSession(ts); err != nil {
-		log.Printf("[telegram] failed to store topic-session mapping: %v", err)
-	}
-
-	h.send(ctx, topic.MessageThreadID,
-		fmt.Sprintf("✅ Session created\n\n**Instance:** %s\n**Session:** `%s`", inst.Name, sess.ID))
 }
 
-// handleAbort processes /abort in a session topic.
-func (h *Handler) handleAbort(ctx context.Context, msg *models.Message) {
-	b := h.parent
-
-	if msg.MessageThreadID == 0 {
-		h.reply(ctx, msg, "❌ Use /abort inside a session topic")
+// handleSelectCallback 处理 session 选择回调
+func (b *Bot) handleSelectCallback(ctx context.Context, _ *bot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	if cb.Message.Message != nil && cb.Message.Message.Chat.ID != b.chatID {
 		return
 	}
 
-	ts, err := b.store.GetTopicSession(msg.MessageThreadID)
+	b.bot.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+		CallbackQueryID: cb.ID,
+	})
+
+	// 格式: sel:{instanceID}:{sessionID}
+	parts := strings.SplitN(cb.Data, ":", 3)
+	if len(parts) < 3 {
+		return
+	}
+	instanceID := parts[1]
+	sessionID := parts[2]
+
+	inst, err := b.store.Get(instanceID)
 	if err != nil {
-		h.reply(ctx, msg, "❌ No session linked to this topic")
+		b.send(ctx, "❌ Instance not found")
 		return
 	}
 
-	inst, err := b.store.Get(ts.InstanceID)
-	if err != nil {
-		h.reply(ctx, msg, "❌ Instance not found")
-		return
-	}
+	b.ClearActive()
+	b.SetActive(inst.ID, sessionID)
 
-	url := opencodeURL(inst.ID, inst.Port, "/session/"+ts.SessionID+"/abort")
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		h.reply(ctx, msg, fmt.Sprintf("❌ Abort failed: %v", err))
-		return
+	sessID := sessionID
+	if len(sessID) > 8 {
+		sessID = sessID[:8]
 	}
-	resp.Body.Close()
+	b.send(ctx, fmt.Sprintf("✅ Session `%s` activated on *%s*\n\nSend a message to continue chatting.", sessID, inst.Name))
 
-	h.reply(ctx, msg, "✅ Session aborted")
+	b.streams.EnsureStream(inst, sessionID)
 }
 
-// handleList processes /list — shows all active topic-session mappings.
-func (h *Handler) handleList(ctx context.Context, msg *models.Message) {
-	b := h.parent
-
-	instances := b.getInstances()
-	if len(instances) == 0 {
-		h.reply(ctx, msg, "No instances found")
+// handleList 列出所有 session
+func (b *Bot) handleList(ctx context.Context, msg *models.Message) {
+	running := b.runningInstances()
+	if len(running) == 0 {
+		b.send(ctx, "No instances found")
 		return
 	}
+
+	active := b.GetActive()
 
 	var sb strings.Builder
-	sb.WriteString("**Active Sessions**\n\n")
-	totalSessions := 0
+	sb.WriteString("*Sessions*\n\n")
+	total := 0
 
-	for _, inst := range instances {
-		sessions, err := b.store.ListTopicSessionsByInstance(inst.ID)
+	for _, inst := range running {
+		sessions, err := b.listOpencodeSessions(ctx, inst)
 		if err != nil || len(sessions) == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("📦 **%s** (%s)\n", inst.Name, inst.Status))
-		for _, ts := range sessions {
-			totalSessions++
-			sessID := ts.SessionID
-			if len(sessID) > 8 {
-				sessID = sessID[:8] + "…"
+		sb.WriteString(fmt.Sprintf("📦 *%s* (%s)\n", inst.Name, inst.Status))
+		for _, sess := range sessions {
+			total++
+			title := sess.Title
+			if title == "" {
+				title = "(untitled)"
 			}
-			sb.WriteString(fmt.Sprintf("  └ topic:%d → `%s`\n", ts.TopicID, sessID))
+			marker := ""
+			if active != nil && active.sessionID == sess.ID {
+				marker = " ← active"
+			}
+			sessID := sess.ID
+			if len(sessID) > 8 {
+				sessID = sessID[:8]
+			}
+			sb.WriteString(fmt.Sprintf("  `%s` %s%s\n", sessID, title, marker))
 		}
 		sb.WriteString("\n")
 	}
 
-	if totalSessions == 0 {
-		h.reply(ctx, msg, "No active sessions")
+	if total == 0 {
+		b.send(ctx, "No sessions found")
 		return
 	}
 
-	h.reply(ctx, msg, sb.String())
+	b.send(ctx, sb.String())
 }
 
-// handleSessionMessage forwards a regular message in a session topic to opencode.
-func (h *Handler) handleSessionMessage(ctx context.Context, msg *models.Message) {
-	b := h.parent
-
-	if msg.Text == "" {
+// handleAbort 中止活跃 session
+func (b *Bot) handleAbort(ctx context.Context, msg *models.Message) {
+	active := b.GetActive()
+	if active == nil {
+		b.send(ctx, "❌ No active session")
 		return
 	}
 
-	ts, err := b.store.GetTopicSession(msg.MessageThreadID)
-	if err == sql.ErrNoRows {
-		// Not a session topic — ignore
-		return
-	}
+	inst, err := b.store.Get(active.instanceID)
 	if err != nil {
-		log.Printf("[telegram] get topic session: %v", err)
+		b.send(ctx, "❌ Instance not found")
 		return
 	}
 
-	inst, err := b.store.Get(ts.InstanceID)
+	url := opencodeURL(inst.ID, inst.Port, "/session/"+active.sessionID+"/abort")
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		h.reply(ctx, msg, "❌ Instance not found")
+		b.send(ctx, fmt.Sprintf("❌ Abort failed: %v", err))
+		return
+	}
+	resp.Body.Close()
+
+	b.send(ctx, "✅ Session aborted")
+}
+
+// handleExit 断开活跃 session（停止 SSE，清除 active）
+func (b *Bot) handleExit(ctx context.Context, msg *models.Message) {
+	active := b.GetActive()
+	if active == nil {
+		b.send(ctx, "No active session")
+		return
+	}
+	b.ClearActive()
+	b.send(ctx, "✅ Disconnected from session")
+}
+
+// handleSessionMessage 转发消息到活跃 session
+func (b *Bot) handleSessionMessage(ctx context.Context, msg *models.Message) {
+	active := b.GetActive()
+	if active == nil {
+		b.send(ctx, "No active session. Use /cc\\_new or /cc\\_select")
 		return
 	}
 
-	// If no session ID yet, create one first
-	if ts.SessionID == "" {
-		sess, err := h.createOpencodeSession(ctx, inst, "")
-		if err != nil {
-			h.reply(ctx, msg, fmt.Sprintf("❌ Failed to create session: %v", err))
-			return
-		}
-		ts.SessionID = sess.ID
-		if err := b.store.UpdateTopicSessionID(ts.TopicID, sess.ID); err != nil {
-			log.Printf("[telegram] update session ID: %v", err)
-		}
+	inst, err := b.store.Get(active.instanceID)
+	if err != nil {
+		b.send(ctx, "❌ Instance not found")
+		return
 	}
 
-	// Start SSE stream for this session (idempotent — won't duplicate)
-	log.Printf("[telegram] forwarding message to session %s on instance %s (port %d)", ts.SessionID[:8], inst.ID, inst.Port)
-	b.streams.EnsureStream(ctx, ts, inst)
+	log.Printf("[telegram] forwarding message to session %s on instance %s (port %d)", active.sessionID[:8], inst.ID, inst.Port)
 
-	// Send message to opencode
+	// 确保 SSE 流在运行
+	b.streams.EnsureStream(inst, active.sessionID)
+
 	body := opencodeMessageBody{
 		Parts: []opencodeMessagePart{
 			{Type: "text", Text: msg.Text},
@@ -301,38 +335,36 @@ func (h *Handler) handleSessionMessage(ctx context.Context, msg *models.Message)
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	// opencode API 端点是 /session/{id}/prompt_async（非 /message），
-	// 返回 204 表示 prompt 已接受，实际处理异步进行
-	url := opencodeURL(inst.ID, inst.Port, "/session/"+ts.SessionID+"/prompt_async")
+	// opencode API 端点: /session/{id}/prompt_async，返回 204 表示接受
+	url := opencodeURL(inst.ID, inst.Port, "/session/"+active.sessionID+"/prompt_async")
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyJSON))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		h.reply(ctx, msg, fmt.Sprintf("❌ Failed to send message: %v", err))
+		b.send(ctx, fmt.Sprintf("❌ Failed to send message: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[telegram] prompt_async rejected: status=%d body=%s", resp.StatusCode, string(body))
-		h.reply(ctx, msg, fmt.Sprintf("❌ opencode rejected prompt (status %d): %s", resp.StatusCode, string(body)))
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[telegram] prompt_async rejected: status=%d body=%s", resp.StatusCode, string(respBody))
+		b.send(ctx, fmt.Sprintf("❌ opencode rejected prompt (status %d): %s", resp.StatusCode, string(respBody)))
 		return
 	}
-	log.Printf("[telegram] prompt_async accepted for session %s (status %d)", ts.SessionID[:8], resp.StatusCode)
+	log.Printf("[telegram] prompt_async accepted for session %s (status %d)", active.sessionID[:8], resp.StatusCode)
 }
 
-// handlePermissionCallback processes allow/deny permission responses.
-func (h *Handler) handlePermissionCallback(ctx context.Context, _ *bot.Bot, update *models.Update) {
-	b := h.parent
+// handlePermissionCallback 处理权限回调
+func (b *Bot) handlePermissionCallback(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	cb := update.CallbackQuery
 
 	b.bot.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 		CallbackQueryID: cb.ID,
 	})
 
-	// 回调数据格式: perm:{action}:{instanceID}:{sessionID}:{permissionID}
+	// 格式: perm:{action}:{instanceID}:{sessionID}:{permissionID}
 	parts := strings.SplitN(cb.Data, ":", 5)
 	if len(parts) < 5 {
 		return
@@ -367,7 +399,6 @@ func (h *Handler) handlePermissionCallback(ctx context.Context, _ *bot.Bot, upda
 	}
 	resp.Body.Close()
 
-	// Edit the original message to show the decision
 	statusText := "✅ Allowed"
 	if action != "allow" {
 		statusText = "❌ Denied"
@@ -381,16 +412,20 @@ func (h *Handler) handlePermissionCallback(ctx context.Context, _ *bot.Bot, upda
 	}
 }
 
-
-// handleSync processes /sync — synchronizes topics with opencode sessions.
-func (h *Handler) handleSync(ctx context.Context, msg *models.Message) {
-	result := h.parent.SyncTopics(ctx)
-	h.reply(ctx, msg, result)
-}
 // --- Helpers ---
 
-// listOpencodeSessions calls GET /session on the opencode API.
-func (h *Handler) listOpencodeSessions(ctx context.Context, inst *store.Instance) ([]opencodeSession, error) {
+func (b *Bot) runningInstances() []*store.Instance {
+	instances := b.getInstances()
+	var running []*store.Instance
+	for _, inst := range instances {
+		if inst.Status == "running" {
+			running = append(running, inst)
+		}
+	}
+	return running
+}
+
+func (b *Bot) listOpencodeSessions(ctx context.Context, inst *store.Instance) ([]opencodeSession, error) {
 	url := opencodeURL(inst.ID, inst.Port, "/session")
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -412,13 +447,8 @@ func (h *Handler) listOpencodeSessions(ctx context.Context, inst *store.Instance
 	return sessions, nil
 }
 
-// createOpencodeSession calls POST /session on the opencode API.
-func (h *Handler) createOpencodeSession(ctx context.Context, inst *store.Instance, title string) (*opencodeSession, error) {
-	reqBody := map[string]string{}
-	if title != "" {
-		reqBody["title"] = title
-	}
-	bodyJSON, _ := json.Marshal(reqBody)
+func (b *Bot) createOpencodeSession(ctx context.Context, inst *store.Instance) (*opencodeSession, error) {
+	bodyJSON, _ := json.Marshal(map[string]string{})
 
 	url := opencodeURL(inst.ID, inst.Port, "/session")
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyJSON))
@@ -441,48 +471,4 @@ func (h *Handler) createOpencodeSession(ctx context.Context, inst *store.Instanc
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &sess, nil
-}
-
-// reply sends a message in the same thread as msg.
-func (h *Handler) reply(ctx context.Context, msg *models.Message, text string) {
-	h.send(ctx, msg.MessageThreadID, text)
-}
-
-// send sends a message to a specific thread.
-func (h *Handler) send(ctx context.Context, threadID int, text string) {
-	b := h.parent
-	b.bot.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:          b.chatID,
-		MessageThreadID: threadID,
-		Text:            text,
-		ParseMode:       models.ParseModeMarkdown,
-	})
-}
-
-
-const helpText = `*CloudCode Bot*
-
-/new [instance] — Create a new session + topic
-/abort — Abort current session (in session topic)
-/list — List active sessions
-/sync — Sync topics with opencode sessions
-/help — Show this help
-
-Send any message in a session topic to chat with opencode.`
-
-// handleHelp sends usage information.
-func (h *Handler) handleHelp(ctx context.Context, msg *models.Message) {
-	h.parent.bot.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:          h.parent.chatID,
-		MessageThreadID: msg.MessageThreadID,
-		Text:            helpText,
-		ParseMode:       models.ParseModeMarkdown,
-	})
-}
-// truncateTopicName limits topic name to Telegram's 128 char limit.
-func truncateTopicName(name string) string {
-	if len(name) > 128 {
-		return name[:125] + "…"
-	}
-	return name
 }
