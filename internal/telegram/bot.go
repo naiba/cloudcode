@@ -89,10 +89,12 @@ func (b *Bot) setupWatchdogTopic(ctx context.Context) {
 // defaultHandler routes all incoming updates.
 func (b *Bot) defaultHandler(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	if update.Message == nil {
+		log.Printf("[telegram] update without Message: %+v", update)
 		return
 	}
 
 	msg := update.Message
+	log.Printf("[telegram] message: chat=%d thread=%d text=%q", msg.Chat.ID, msg.MessageThreadID, msg.Text)
 
 	// Auth check: only respond to the configured chat
 	if msg.Chat.ID != b.chatID {
