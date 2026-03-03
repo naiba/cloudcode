@@ -102,6 +102,11 @@ go build ./...
 
 内置 plugin 通过 `//go:embed` 嵌入二进制，每次启动强制写入 `plugins/` 目录（覆盖旧版本）：
 
+#### `_cloudcode-telegram.ts` — 会话通知
+- 监听 `session.idle` 和 `session.error` 事件，通过 Telegram Bot API 发送通知到默认窗口
+- 跟踪所有 session 的完成/错误状态（补充 Bot 单窗口模式只关注当前选中 session 的不足）
+- 读取 `CC_TELEGRAM_BOT_TOKEN` 和 `CC_TELEGRAM_CHAT_ID` 环境变量，未配置则静默跳过
+- 自动过滤子 session（subagent）的通知，避免冗余
 #### `_cloudcode-prompt-watchdog.ts` — System Prompt 监控
 
 通过 `experimental.chat.system.transform` hook 拦截 system prompt，自动过滤时间行并检测结构变化。通知发送到 Telegram 默认窗口。
