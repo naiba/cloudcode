@@ -300,7 +300,9 @@ func (h *Handler) handleSessionMessage(ctx context.Context, msg *models.Message)
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	url := opencodeURL(inst.ID, inst.Port, "/session/"+ts.SessionID+"/message")
+	// opencode API 端点是 /session/{id}/prompt_async（非 /message），
+	// 返回 204 表示 prompt 已接受，实际处理异步进行
+	url := opencodeURL(inst.ID, inst.Port, "/session/"+ts.SessionID+"/prompt_async")
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyJSON))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -309,7 +311,13 @@ func (h *Handler) handleSessionMessage(ctx context.Context, msg *models.Message)
 		h.reply(ctx, msg, fmt.Sprintf("❌ Failed to send message: %v", err))
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		h.reply(ctx, msg, fmt.Sprintf("❌ opencode rejected prompt (status %d): %s", resp.StatusCode, string(body)))
+		return
+	}
 }
 
 // handlePermissionCallback processes allow/deny permission responses.
@@ -321,25 +329,31 @@ func (h *Handler) handlePermissionCallback(ctx context.Context, _ *bot.Bot, upda
 		CallbackQueryID: cb.ID,
 	})
 
-	// Format: perm:allow:<instanceID>:<sessionID> or perm:deny:<instanceID>:<sessionID>
-	parts := strings.SplitN(cb.Data, ":", 4)
-	if len(parts) < 4 {
+	// 回调数据格式: perm:{action}:{instanceID}:{sessionID}:{permissionID}
+	parts := strings.SplitN(cb.Data, ":", 5)
+	if len(parts) < 5 {
 		return
 	}
 	action := parts[1]
 	instanceID := parts[2]
 	sessionID := parts[3]
+	permissionID := parts[4]
 
 	inst, err := b.store.Get(instanceID)
 	if err != nil {
 		return
 	}
 
-	// POST to opencode permission endpoint
-	permBody := map[string]bool{"allow": action == "allow"}
+	// opencode 权限响应格式: {"response": "once"|"always"|"reject"}
+	response := "once"
+	if action != "allow" {
+		response = "reject"
+	}
+	permBody := map[string]string{"response": response}
 	bodyJSON, _ := json.Marshal(permBody)
 
-	url := opencodeURL(inst.ID, inst.Port, "/session/"+sessionID+"/permission")
+	// 端点: POST /session/{id}/permissions/{permissionID}
+	url := opencodeURL(inst.ID, inst.Port, "/session/"+sessionID+"/permissions/"+permissionID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyJSON))
 	req.Header.Set("Content-Type", "application/json")
 
