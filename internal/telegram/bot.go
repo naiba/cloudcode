@@ -96,6 +96,7 @@ func (b *Bot) defaultHandler(ctx context.Context, _ *bot.Bot, update *models.Upd
 
 	// Auth check: only respond to the configured chat
 	if msg.Chat.ID != b.chatID {
+		log.Printf("[telegram] ignoring message from chat %d (authorized: %d)", msg.Chat.ID, b.chatID)
 		return
 	}
 
@@ -216,6 +217,14 @@ func (b *Bot) SyncTopics(ctx context.Context) string {
 			}
 			_ = b.store.CreateTopicSession(ts)
 			createdCount++
+
+			// 创建 topic 后必须发一条消息，否则 Telegram 不会在聊天列表中显示该 topic
+			b.bot.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:          b.chatID,
+				MessageThreadID: topic.MessageThreadID,
+				Text:            fmt.Sprintf("Session `%s` linked to this topic.\nSend a message to start chatting.", sessID[:8]),
+				ParseMode:       models.ParseModeMarkdown,
+			})
 		}
 	}
 
