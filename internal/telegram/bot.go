@@ -232,5 +232,12 @@ func (b *Bot) SyncTopics(ctx context.Context) string {
 	if sb.Len() > 0 {
 		result += "\n\n" + sb.String()
 	}
+
+	// 在 General topic 发送同步结果，方便通过 Web UI 触发时也能在 Telegram 里看到
+	b.bot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: b.chatID,
+		Text:   result,
+	})
+
 	return result
 }

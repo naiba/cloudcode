@@ -81,6 +81,7 @@ func main() {
 		botToken := envVars["CC_TELEGRAM_BOT_TOKEN"]
 		chatIDStr := envVars["CC_TELEGRAM_CHAT_ID"]
 		if botToken != "" && chatIDStr != "" {
+			log.Printf("Telegram bot config found, chatID=%s", chatIDStr)
 			chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
 			if err != nil {
 				log.Printf("Warning: invalid CC_TELEGRAM_CHAT_ID %q: %v", chatIDStr, err)
@@ -93,9 +94,10 @@ func main() {
 				defer tgCancel()
 				tgBot, err := telegram.New(tgCtx, botToken, chatID, db, getInstances)
 				if err != nil {
-					log.Printf("Warning: failed to start Telegram bot: %v", err)
+					log.Printf("Warning: failed to create Telegram bot: %v", err)
 				} else {
 					go tgBot.Start(tgCtx)
+					log.Printf("Telegram bot started")
 					// Inject watchdog topic thread ID into env.json so containers pick it up
 					if wdID := tgBot.WatchdogTopicID(); wdID != 0 {
 						envVars["CC_TELEGRAM_WATCHDOG_THREAD_ID"] = strconv.Itoa(wdID)
@@ -104,6 +106,8 @@ func main() {
 					h.SetTelegramBot(tgBot)
 				}
 			}
+		} else {
+			log.Printf("Telegram bot not configured (missing CC_TELEGRAM_BOT_TOKEN or CC_TELEGRAM_CHAT_ID in env.json)")
 		}
 	}
 	// Setup routes
