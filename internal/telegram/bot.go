@@ -115,6 +115,12 @@ func (b *Bot) defaultHandler(ctx context.Context, _ *bot.Bot, update *models.Upd
 		case "/list":
 			b.handler.handleList(ctx, msg)
 			return
+		case "/help", "/start":
+			b.handler.handleHelp(ctx, msg)
+			return
+		case "/sync":
+			b.handler.handleSync(ctx, msg)
+			return
 		}
 	}
 

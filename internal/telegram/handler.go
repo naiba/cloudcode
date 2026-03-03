@@ -364,7 +364,131 @@ func (h *Handler) handlePermissionCallback(ctx context.Context, _ *bot.Bot, upda
 	}
 }
 
+
+// handleSync synchronizes Telegram topics with opencode sessions:
+// - Deletes topics for sessions that no longer exist in opencode
+// - Creates topics for sessions that exist in opencode but have no topic
+func (h *Handler) handleSync(ctx context.Context, msg *models.Message) {
+	b := h.parent
+	instances := b.getInstances()
+	var running []*store.Instance
+	for _, inst := range instances {
+		if inst.Status == "running" {
+			running = append(running, inst)
+		}
+	}
+
+	if len(running) == 0 {
+		h.reply(ctx, msg, "❌ No running instances")
+		return
+	}
+
+	var sb strings.Builder
+	var removedCount, createdCount int
+
+	for _, inst := range running {
+		// Get all opencode sessions for this instance
+		activeSessions, err := h.listOpencodeSessions(ctx, inst)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("⚠️ %s: failed to list sessions: %v\n", inst.Name, err))
+			continue
+		}
+
+		// Build set of active session IDs
+		activeSet := make(map[string]*opencodeSession, len(activeSessions))
+		for i := range activeSessions {
+			activeSet[activeSessions[i].ID] = &activeSessions[i]
+		}
+
+		// 1. Remove topics for deleted sessions
+		topicSessions, _ := b.store.ListTopicSessionsByInstance(inst.ID)
+		for _, ts := range topicSessions {
+			if ts.SessionID == "" {
+				continue
+			}
+			if _, exists := activeSet[ts.SessionID]; !exists {
+				// Session no longer exists — delete topic and mapping
+				// DeleteForumTopic may fail if topic was already deleted; ignore errors
+				b.bot.DeleteForumTopic(ctx, &bot.DeleteForumTopicParams{
+					ChatID:          b.chatID,
+					MessageThreadID: ts.TopicID,
+				})
+				_ = b.store.DeleteTopicSession(ts.TopicID)
+				removedCount++
+			}
+		}
+
+		// 2. Create topics for sessions without one
+		// Build set of session IDs that already have topics
+		mappedSessions := make(map[string]bool)
+		// Re-query after deletions
+		topicSessions, _ = b.store.ListTopicSessionsByInstance(inst.ID)
+		for _, ts := range topicSessions {
+			if ts.SessionID != "" {
+				mappedSessions[ts.SessionID] = true
+			}
+		}
+
+		for sessID, sess := range activeSet {
+			if mappedSessions[sessID] {
+				continue
+			}
+			// Create topic for this session
+			topicTitle := sess.Title
+			if topicTitle == "" {
+				topicTitle = sessID[:8]
+			}
+			topicTitle = fmt.Sprintf("[%s] %s", inst.Name, topicTitle)
+
+			topic, err := b.bot.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
+				ChatID: b.chatID,
+				Name:   truncateTopicName(topicTitle),
+			})
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("⚠️ Failed to create topic for session %s: %v\n", sessID[:8], err))
+				continue
+			}
+
+			ts := &store.TopicSession{
+				TopicID:    topic.MessageThreadID,
+				InstanceID: inst.ID,
+				SessionID:  sessID,
+			}
+			_ = b.store.CreateTopicSession(ts)
+			createdCount++
+		}
+	}
+
+	result := fmt.Sprintf("✅ Sync complete: %d topics removed, %d topics created", removedCount, createdCount)
+	if sb.Len() > 0 {
+		result += "\n\n" + sb.String()
+	}
+	h.reply(ctx, msg, result)
+}
 // --- Helpers ---
+
+// listOpencodeSessions calls GET /session on the opencode API.
+func (h *Handler) listOpencodeSessions(ctx context.Context, inst *store.Instance) ([]opencodeSession, error) {
+	url := opencodeURL(inst.ID, inst.Port, "/session")
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var sessions []opencodeSession
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return sessions, nil
+}
 
 // createOpencodeSession calls POST /session on the opencode API.
 func (h *Handler) createOpencodeSession(ctx context.Context, inst *store.Instance, title string) (*opencodeSession, error) {
@@ -413,6 +537,26 @@ func (h *Handler) send(ctx context.Context, threadID int, text string) {
 	})
 }
 
+
+const helpText = `*CloudCode Bot*
+
+/new [instance] — Create a new session + topic
+/abort — Abort current session (in session topic)
+/list — List active sessions
+/sync — Sync topics with opencode sessions
+/help — Show this help
+
+Send any message in a session topic to chat with opencode.`
+
+// handleHelp sends usage information.
+func (h *Handler) handleHelp(ctx context.Context, msg *models.Message) {
+	h.parent.bot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:          h.parent.chatID,
+		MessageThreadID: msg.MessageThreadID,
+		Text:            helpText,
+		ParseMode:       models.ParseModeMarkdown,
+	})
+}
 // truncateTopicName limits topic name to Telegram's 128 char limit.
 func truncateTopicName(name string) string {
 	if len(name) > 128 {
