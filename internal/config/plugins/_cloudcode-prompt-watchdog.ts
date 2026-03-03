@@ -27,6 +27,8 @@
 export const CloudCodePromptWatchdog = async (input: any) => {
   const token = process.env.CC_TELEGRAM_BOT_TOKEN
   const chatId = process.env.CC_TELEGRAM_CHAT_ID
+  // CC_TELEGRAM_WATCHDOG_THREAD_ID: 由平台注入，指定 Prompt Watchdog topic 的 thread ID
+  const threadId = process.env.CC_TELEGRAM_WATCHDOG_THREAD_ID
   const disabled = process.env.CC_PROMPT_WATCHDOG_DISABLED === "true"
 
   if (!token || !chatId || disabled) return {}
@@ -57,7 +59,7 @@ export const CloudCodePromptWatchdog = async (input: any) => {
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: safeText, parse_mode: "Markdown" }),
+        body: JSON.stringify({ chat_id: chatId, text: safeText, parse_mode: "Markdown", ...(threadId ? { message_thread_id: Number(threadId) } : {}) }),
       })
     } catch {}
   }

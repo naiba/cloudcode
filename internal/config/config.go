@@ -9,8 +9,6 @@ import (
 	"regexp"
 )
 
-//go:embed plugins/_cloudcode-telegram.ts
-var telegramPlugin []byte
 
 //go:embed plugins/_cloudcode-prompt-watchdog.ts
 var promptWatchdogPlugin []byte
@@ -95,11 +93,6 @@ func (m *Manager) ensureDirs() error {
 		}
 	}
 
-
-	pluginPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-telegram.ts")
-	if err := os.WriteFile(pluginPath, telegramPlugin, 0640); err != nil {
-		return fmt.Errorf("write telegram plugin: %w", err)
-	}
 
 	// 写入 prompt watchdog plugin（每次启动覆盖，确保最新版本）
 	watchdogPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-prompt-watchdog.ts")

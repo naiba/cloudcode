@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"html/template"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/naiba/cloudcode/internal/handler"
 	"github.com/naiba/cloudcode/internal/proxy"
 	"github.com/naiba/cloudcode/internal/store"
+	"github.com/naiba/cloudcode/internal/telegram"
 )
 
 var version = "dev"
@@ -72,6 +75,34 @@ func main() {
 
 	h := handler.New(db, dm, rp, cfgMgr, tmpl)
 
+	// Start Telegram bot if configured (CC_TELEGRAM_BOT_TOKEN + CC_TELEGRAM_CHAT_ID)
+	if botToken := os.Getenv("CC_TELEGRAM_BOT_TOKEN"); botToken != "" {
+		if chatIDStr := os.Getenv("CC_TELEGRAM_CHAT_ID"); chatIDStr != "" {
+			chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
+			if err != nil {
+				log.Printf("Warning: invalid CC_TELEGRAM_CHAT_ID %q: %v", chatIDStr, err)
+			} else {
+				getInstances := func() []*store.Instance {
+					instances, _ := db.List()
+					return instances
+				}
+				tgCtx, tgCancel := context.WithCancel(context.Background())
+				defer tgCancel()
+				tgBot, err := telegram.New(tgCtx, botToken, chatID, db, getInstances)
+				if err != nil {
+					log.Printf("Warning: failed to start Telegram bot: %v", err)
+				} else {
+					go tgBot.Start(tgCtx)
+					// Inject watchdog topic thread ID into global env vars so containers pick it up
+					if wdID := tgBot.WatchdogTopicID(); wdID != 0 && cfgMgr != nil {
+						envVars, _ := cfgMgr.GetEnvVars()
+						envVars["CC_TELEGRAM_WATCHDOG_THREAD_ID"] = strconv.Itoa(wdID)
+						_ = cfgMgr.SetEnvVars(envVars)
+					}
+				}
+			}
+		}
+	}
 	// Setup routes
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)

@@ -3,7 +3,9 @@ module github.com/naiba/cloudcode
 go 1.25.2
 
 require (
+	github.com/go-telegram/bot v1.19.0
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/moby/moby/api v1.53.0
 	github.com/moby/moby/client v0.2.2
 	modernc.org/sqlite v1.45.0
@@ -20,7 +22,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

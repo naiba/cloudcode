@@ -91,10 +91,21 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS topic_sessions (
+			topic_id     INTEGER NOT NULL,
+			instance_id  TEXT NOT NULL,
+			session_id   TEXT NOT NULL DEFAULT '',
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (topic_id)
+		)
+	`)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
-
 // Create inserts a new instance.
 func (s *Store) Create(inst *Instance) error {
 	envJSON, err := json.Marshal(inst.EnvVars)
@@ -201,4 +212,72 @@ func scanInstanceRow(rows *sql.Rows) (*Instance, error) {
 		return nil, fmt.Errorf("unmarshal env vars: %w", err)
 	}
 	return &inst, nil
+}
+
+// TopicSession maps a Telegram forum topic to an opencode session.
+type TopicSession struct {
+	TopicID    int
+	InstanceID string
+	SessionID  string
+	CreatedAt  time.Time
+}
+
+// CreateTopicSession inserts a new topic-session mapping.
+func (s *Store) CreateTopicSession(ts *TopicSession) error {
+	if ts.CreatedAt.IsZero() {
+		ts.CreatedAt = time.Now()
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO topic_sessions (topic_id, instance_id, session_id, created_at)
+		VALUES (?, ?, ?, ?)`,
+		ts.TopicID, ts.InstanceID, ts.SessionID, ts.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert topic session: %w", err)
+	}
+	return nil
+}
+
+// GetTopicSession retrieves a topic-session mapping by topic ID.
+func (s *Store) GetTopicSession(topicID int) (*TopicSession, error) {
+	var ts TopicSession
+	err := s.db.QueryRow(`SELECT topic_id, instance_id, session_id, created_at FROM topic_sessions WHERE topic_id = ?`, topicID).Scan(
+		&ts.TopicID, &ts.InstanceID, &ts.SessionID, &ts.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &ts, nil
+}
+
+// UpdateTopicSessionID updates the session ID for a given topic.
+func (s *Store) UpdateTopicSessionID(topicID int, sessionID string) error {
+	_, err := s.db.Exec(`UPDATE topic_sessions SET session_id = ? WHERE topic_id = ?`, sessionID, topicID)
+	if err != nil {
+		return fmt.Errorf("update topic session: %w", err)
+	}
+	return nil
+}
+
+// DeleteTopicSession removes a topic-session mapping.
+func (s *Store) DeleteTopicSession(topicID int) error {
+	_, err := s.db.Exec(`DELETE FROM topic_sessions WHERE topic_id = ?`, topicID)
+	return err
+}
+
+// ListTopicSessionsByInstance returns all topic-session mappings for an instance.
+func (s *Store) ListTopicSessionsByInstance(instanceID string) ([]*TopicSession, error) {
+	rows, err := s.db.Query(`SELECT topic_id, instance_id, session_id, created_at FROM topic_sessions WHERE instance_id = ? ORDER BY created_at DESC`, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("query topic sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []*TopicSession
+	for rows.Next() {
+		var ts TopicSession
+		if err := rows.Scan(&ts.TopicID, &ts.InstanceID, &ts.SessionID, &ts.CreatedAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, &ts)
+	}
+	return sessions, rows.Err()
 }
