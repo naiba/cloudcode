@@ -78,7 +78,7 @@ func (m *Manager) ensureImage(ctx context.Context) error {
 	log.Printf("Pulling latest image %s...", m.image)
 	reader, err := m.cli.ImagePull(ctx, m.image, client.ImagePullOptions{})
 	if err != nil {
-		// pull 失败时，如果本地已有镜像则继续使用
+		// If pull fails but a local image already exists, continue with it.
 		exists, checkErr := m.ImageExists(ctx)
 		if checkErr == nil && exists {
 			log.Printf("Pull failed (%v), using existing local image %s", err, m.image)

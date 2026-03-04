@@ -463,8 +463,7 @@ Returns all global settings data needed to render the settings page.
     "agents":   [],
     "skills":   [],
     "plugins":  [
-      { "name": "_cloudcode-telegram.ts",      "rel_path": "opencode/plugins/_cloudcode-telegram.ts" },
-      { "name": "_cloudcode-prompt-watchdog.ts","rel_path": "opencode/plugins/_cloudcode-prompt-watchdog.ts" }
+      { "name": "_cloudcode-instructions.md", "rel_path": "opencode/plugins/_cloudcode-instructions.md" }
     ]
   },
   "agents_skills": [
@@ -481,7 +480,7 @@ Returns all global settings data needed to render the settings page.
 
 **Notes:**
 - `env_vars` is an array (not a map) but **order is not guaranteed** — the Go map iteration is non-deterministic.
-- `dirs.plugins` will always contain `_cloudcode-telegram.ts` and `_cloudcode-prompt-watchdog.ts` (written on every server start). These should be treated as read-only built-in plugins in the UI.
+- `dirs.plugins` will always contain `_cloudcode-instructions.md` (written on every server start). This should be treated as a read-only built-in plugin in the UI.
 - `directory_mappings.host` uses the actual filesystem path (not `{config_dir}` placeholder).
 
 ---

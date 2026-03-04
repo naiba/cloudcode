@@ -411,7 +411,7 @@ main.container {
 /* --- 8. Instance Grid & Cards --- */
 .instance-grid {
     display: grid;
-    /* 卡片最小宽度需容纳 running 状态 6 个按钮不换行（一行 3 个卡片） */
+    /* min width keeps all 6 action buttons on one line for running instances */
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: var(--space-md);
 }
@@ -443,7 +443,7 @@ main.container {
     padding-bottom: var(--space-sm);
     border-bottom: 1px solid var(--border-subtle);
 }
-/* card-meta 已废弃，保留以兼容可能的扩展 */
+/* card-meta: kept for potential future use */
 .instance-card-meta {
     display: flex;
     flex-direction: column;

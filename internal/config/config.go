@@ -11,12 +11,6 @@ import (
 	"strings"
 )
 
-//go:embed plugins/_cloudcode-telegram.ts
-var telegramPlugin []byte
-
-//go:embed plugins/_cloudcode-prompt-watchdog.ts
-var promptWatchdogPlugin []byte
-
 //go:embed plugins/_cloudcode-instructions.md
 var instructionsFile []byte
 
@@ -51,12 +45,11 @@ var DotOpenCodeFiles = []string{
 	"package.json",
 }
 
-// #12: pre-compile regexes as package-level vars
+// Pre-compiled regexes for JSONC comment stripping.
 var (
-	reInstructionRef    = regexp.MustCompile(`["'][^"']*["']`) // rebuilt per-call, see ensureInstruction
-	reStripSingleLine   = regexp.MustCompile(`(?m)^(\s*)//.*$`)
-	reStripInlineAfter  = regexp.MustCompile(`("[^"]*"|[^/])//.*$`)
-	reStripBlock        = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	reStripSingleLine    = regexp.MustCompile(`(?m)^(\s*)//.*$`)
+	reStripInlineAfter   = regexp.MustCompile(`("[^"]*"|[^/])//.*$`)
+	reStripBlock         = regexp.MustCompile(`(?s)/\*.*?\*/`)
 	reStripTrailingComma = regexp.MustCompile(`,\s*([}\]])`)
 )
 
@@ -122,16 +115,6 @@ func (m *Manager) ensureDirs() error {
 		if err := os.MkdirAll(d, 0750); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
-	}
-
-	pluginPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-telegram.ts")
-	if err := os.WriteFile(pluginPath, telegramPlugin, 0640); err != nil {
-		return fmt.Errorf("write telegram plugin: %w", err)
-	}
-
-	watchdogPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-prompt-watchdog.ts")
-	if err := os.WriteFile(watchdogPath, promptWatchdogPlugin, 0640); err != nil {
-		return fmt.Errorf("write prompt watchdog plugin: %w", err)
 	}
 
 	if err := m.ensureInstructionsFile(); err != nil {
