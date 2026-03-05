@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, SystemResources } from "@/lib/api";
+import { api, SystemResources, Instance, instanceOpenUrl } from "@/lib/api";
 
 export default function NewInstancePage() {
   const router = useRouter();
@@ -13,6 +13,8 @@ export default function NewInstancePage() {
   const [cpuCores, setCpuCores] = useState(2);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [created, setCreated] = useState<Instance | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     api.system.resources().then(setResources).catch(() => null);
@@ -32,12 +34,77 @@ export default function NewInstancePage() {
         memory_mb: memoryMb,
         cpu_cores: cpuCores,
       });
-      router.push(`/instances/${inst.id}`);
+      // Show the token before navigating — the user must save it.
+      setCreated(inst);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
+
+  const handleCopy = () => {
+    if (!created) return;
+    navigator.clipboard.writeText(created.access_token).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  // Token reveal screen shown after creation
+  if (created) {
+    return (
+      <div className="max-w-lg mx-auto">
+        <h1 className="text-2xl font-bold text-white mb-2">
+          Instance Created
+        </h1>
+        <p className="text-slate-400 text-sm mb-6">
+          Save the access token below. It is shown once and can be retrieved
+          later from the instance detail page (requires platform login).
+        </p>
+
+        <div className="bg-slate-800 border border-amber-600/40 rounded-xl p-6 mb-6">
+          <p className="text-xs text-amber-400 uppercase tracking-wide font-semibold mb-3">
+            Instance Access Token
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-slate-900 rounded-lg px-3 py-2 text-sm font-mono text-green-400 break-all select-all">
+              {created.access_token}
+            </code>
+            <button
+              onClick={handleCopy}
+              className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs rounded-lg transition-colors whitespace-nowrap"
+            >
+              {copied ? "Copied!" : "Copy"}
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mt-3">
+            Use this token to open the web UI or connect via SDK:
+          </p>
+          <code className="block text-xs text-slate-400 mt-1 break-all">
+            opencode attach {instanceOpenUrl(created.id, created.access_token)}{" "}
+            --password {created.access_token}
+          </code>
+        </div>
+
+        <div className="flex gap-3">
+          <a
+            href={instanceOpenUrl(created.id, created.access_token)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 py-2 text-center bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg text-sm transition-colors"
+          >
+            Open Web UI ↗
+          </a>
+          <button
+            onClick={() => router.push(`/instances/${created.id}`)}
+            className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium rounded-lg text-sm transition-colors"
+          >
+            Go to Instance
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-lg mx-auto">

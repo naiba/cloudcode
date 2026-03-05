@@ -44,7 +44,6 @@ All responses are `application/json` unless noted otherwise (WebSocket, file pro
 | `409` | Conflict (e.g. duplicate name) |
 | `429` | Too many requests (login rate limit) |
 | `500` | Internal server error |
-| `503` | Service unavailable (no ports left) |
 
 ### Timestamps
 ISO 8601 strings: `"2026-03-05T01:37:44Z"`
@@ -150,14 +149,38 @@ const ws = new WebSocket(`ws://localhost:8080/instances/${id}/logs/ws?token=${en
 | `container_id` | string | Full Docker container ID; empty string if not yet created |
 | `status` | string | See status values below |
 | `error_msg` | string | Last error message; empty string when healthy |
-| `port` | integer | Host port (10000–10100) the OpenCode web UI is published on |
 | `work_dir` | string | Working directory inside the container (always `/root`) |
 | `memory_mb` | integer | Memory limit in MB; `0` = unlimited |
 | `cpu_cores` | number | CPU core limit (fractional allowed); `0` = unlimited |
+| `access_token` | string | Per-instance access token. Required to open the web UI or connect via SDK. |
 | `created_at` | string | ISO 8601 timestamp |
 | `updated_at` | string | ISO 8601 timestamp |
 
 > **Note:** `env_vars` is intentionally excluded from all API responses to prevent leaking secrets. Env vars are managed via the Settings API.
+
+### Per-instance access token
+
+Each instance has a unique `access_token` generated at creation. It is required to access the instance's web UI or connect via the OpenCode SDK/CLI.
+
+**Web UI:** Navigate to `/instance/{id}/?token={access_token}`. The proxy validates the token, sets a cookie (`_cc_inst_token_{id}`), and redirects to strip the token from the URL. Subsequent requests (assets, WebSocket) use the cookie automatically.
+
+**SDK / CLI:**
+```bash
+opencode attach http://your-cloudcode-host/instance/{id}/ --password {access_token}
+```
+```ts
+import { createOpencodeClient } from "@opencode-ai/sdk"
+const client = createOpencodeClient({
+  baseUrl: "http://your-cloudcode-host/instance/{id}/",
+  headers: { Authorization: `Bearer ${accessToken}` },
+})
+```
+
+The token is enforced at two layers:
+1. The CloudCode proxy validates it before forwarding (cookie, `?token=` param, or `Authorization: Bearer`)
+2. OpenCode's own `OPENCODE_SERVER_PASSWORD` Basic Auth inside the container provides defense-in-depth
+
+Container ports are **not published** to the host — all traffic routes through the CloudCode proxy via the internal Docker network.
 
 **Status values:**
 - `created` — record exists, container not yet started
@@ -205,7 +228,7 @@ Returns a single instance. Syncs Docker status if the instance has a `container_
 POST /api/instances
 ```
 
-Creates the DB record, allocates a port, and starts the Docker container synchronously.
+Creates the DB record, generates a per-instance access token, and starts the Docker container synchronously.
 Blocks until the container is running or fails.
 
 **Request body:**
@@ -236,9 +259,24 @@ Blocks until the container is running or fails.
 { "error": "instance name already exists" }
 ```
 
-**Response `503`:**
+---
+
+### Regenerate instance token
+
+```
+POST /api/instances/{id}/regenerate-token
+```
+
+Generates a new `access_token` for the instance and updates the DB and proxy immediately. The **container must be restarted** for the new token to take effect inside the OpenCode server (it updates `OPENCODE_SERVER_PASSWORD` only at container creation).
+
+**Response `200`:**
 ```json
-{ "error": "no available ports in range 10000-10100" }
+{ "access_token": "new64charhextoken..." }
+```
+
+**Response `404`:**
+```json
+{ "error": "instance not found" }
 ```
 
 ---
@@ -304,7 +342,7 @@ Sends a stop signal to the container (30-second graceful timeout via Docker). Un
 POST /api/instances/{id}/restart
 ```
 
-Stops and removes the old container, then creates a fresh one. Re-runs `entrypoint.sh`, updating OpenCode and all dependencies. The named volume (`/root`) is preserved — code and session data survive.
+Stops and removes the old container, then creates a fresh one. Re-runs `entrypoint.sh`, updating OpenCode and all dependencies. The named volume (`/root`) is preserved — code and session data survive. The existing `access_token` is reused (no change needed).
 
 **Response `200`:** Updated Instance object (status `"running"`)
 
@@ -722,14 +760,13 @@ Removes an entire skill directory from `data/config/agents-skills/skills/{name}/
 
 ## CORS
 
-Two separate CORS mechanisms exist:
-
 ### API CORS (`--cors-origin`)
 
-Applies to all platform API routes. Enabled only when `--cors-origin` is passed:
+Applies to all platform API routes. Enabled only when `--cors-origin` is passed.
+Accepts a comma-separated list. The matched request `Origin` is reflected back (required for multi-origin CORS with credentials).
 
 ```
-Access-Control-Allow-Origin: <value>
+Access-Control-Allow-Origin: <matched origin>
 Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
 Access-Control-Allow-Credentials: true
@@ -737,16 +774,10 @@ Access-Control-Allow-Credentials: true
 
 Used in dev when the frontend runs on a different port:
 ```bash
-./bin/cloudcode --addr :8080 --access-token mytoken --cors-origin http://localhost:3000
+./bin/cloudcode --addr :8080 --access-token mytoken --cors-origin http://localhost:3000,http://localhost:4000
 ```
 
-### Proxy CORS (`--proxy-cors-origin`)
-
-Applies to responses proxied from OpenCode containers. Disabled by default (empty string). Set explicitly when the instance Web UI needs to be accessed cross-origin:
-
-```bash
-./bin/cloudcode --proxy-cors-origin https://my-frontend.example.com
-```
+> **Note:** `--proxy-cors-origin` has been removed. Container ports are no longer published to the host, so browsers never reach the OpenCode server directly — only the Go proxy does. The platform CORS middleware (`--cors-origin`) covers all browser-facing traffic.
 
 ---
 
@@ -764,6 +795,7 @@ Applies to responses proxied from OpenCode containers. Disabled by default (empt
 | `POST` | `/api/instances/{id}/start` | session | Start instance |
 | `POST` | `/api/instances/{id}/stop` | session | Stop instance (blocks up to 30s) |
 | `POST` | `/api/instances/{id}/restart` | session | Restart instance (recreates container) |
+| `POST` | `/api/instances/{id}/regenerate-token` | session | Generate a new per-instance access token |
 | `GET` | `/api/instances/{id}/status?s=` | session | Poll single status (204 if unchanged) |
 | `POST` | `/api/status/instances` | session | Batch poll statuses (returns only changed) |
 | `GET` | `/api/system/resources` | session | Host memory + CPU totals |
@@ -777,6 +809,6 @@ Applies to responses proxied from OpenCode containers. Disabled by default (empt
 | `PUT` | `/api/settings/dir-file` | session | Create/update dir file |
 | `DELETE` | `/api/settings/dir-file?path=` | session | Delete dir file |
 | `DELETE` | `/api/settings/agents-skill?name=` | session | Delete agents skill directory |
-| `GET` | `/instance/{id}/` | session | Proxy to OpenCode Web UI (trailing slash required) |
+| `GET` | `/instance/{id}/` | session + instance token | Proxy to OpenCode Web UI (trailing slash required; `?token=` or cookie or Bearer) |
 | `GET` | `/login` | public | Login page (SPA) |
 | `GET` | `/` (catch-all) | mixed | API 404 / proxy fallback / SPA index |

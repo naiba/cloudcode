@@ -3,6 +3,8 @@ package proxy
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,49 +16,43 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+const (
+	// instTokenCookiePrefix is the per-instance token cookie name prefix.
+	// Full cookie name: _cc_inst_token_{instanceID}
+	instTokenCookiePrefix = "_cc_inst_token_"
+	// instTokenCookieMaxAge is how long the per-instance token cookie lives.
+	instTokenCookieMaxAge = 86400 * 30 // 30 days
+)
+
+// instanceEntry holds per-instance proxy state.
+type instanceEntry struct {
+	stripProxy  *httputil.ReverseProxy
+	directProxy *httputil.ReverseProxy
+	token       string // per-instance access token (= OPENCODE_SERVER_PASSWORD)
+}
 
 // ReverseProxy manages dynamic reverse proxying to opencode instances.
 type ReverseProxy struct {
-	mu          sync.RWMutex
-	proxies     map[string]*httputil.ReverseProxy // instanceID → proxy (strips /instance/{id} prefix)
-	direct      map[string]*httputil.ReverseProxy // instanceID → proxy (forwards path as-is)
-	ports       map[string]int                    // instanceID → port
-	corsOrigins []string                          // allowed CORS origins for proxied responses
+	mu       sync.RWMutex
+	entries  map[string]*instanceEntry // instanceID → entry
 }
 
 // New creates a new ReverseProxy manager.
-// corsOrigins is the list of origins for the Access-Control-Allow-Origin header injected
-// into proxied instance responses. The request Origin is matched against the list and
-// reflected back (required for multi-origin CORS with credentials). Empty = disabled.
-func New(corsOrigins []string) *ReverseProxy {
+func New() *ReverseProxy {
 	return &ReverseProxy{
-		proxies:     make(map[string]*httputil.ReverseProxy),
-		direct:      make(map[string]*httputil.ReverseProxy),
-		ports:       make(map[string]int),
-		corsOrigins: corsOrigins,
+		entries: make(map[string]*instanceEntry),
 	}
-}
-
-// matchOrigin returns the origin from the allowlist that matches the request Origin header,
-// or "" if there is no match or the allowlist is empty.
-func (rp *ReverseProxy) matchOrigin(r *http.Request) string {
-	req := r.Header.Get("Origin")
-	if req == "" {
-		return ""
-	}
-	for _, o := range rp.corsOrigins {
-		if strings.EqualFold(o, req) {
-			return o
-		}
-	}
-	return ""
 }
 
 // Register adds or updates a proxy route for an instance.
-// Traffic is routed via the published port on localhost.
-func (rp *ReverseProxy) Register(instanceID string, port int) error {
-	target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
+// Traffic is routed directly to the container via the cloudcode-net Docker network.
+// containerIP is the container's IP on cloudcode-net; port is the opencode listen port;
+// token is the per-instance access token (used for both proxy validation and Basic Auth forwarding).
+func (rp *ReverseProxy) Register(instanceID, containerIP string, port int, token string) error {
+	target, err := url.Parse(fmt.Sprintf("http://%s:%d", containerIP, port))
 	if err != nil {
 		return fmt.Errorf("parse target URL: %w", err)
 	}
@@ -74,8 +70,14 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		}
 		req.Host = target.Host
 		req.Header.Del("Accept-Encoding")
+		// Remove the CloudCode proxy auth header before forwarding — OpenCode
+		// uses its own Basic Auth (OPENCODE_SERVER_PASSWORD) which is already
+		// baked into the container env. We do NOT forward the client's
+		// Authorization header; instead we inject the correct Basic Auth
+		// credential so OpenCode accepts the proxied request.
+		injectBasicAuth(req, token)
 	}
-	stripProxy.ModifyResponse = chainModifyResponse(injectInstanceIsolation(instanceID), injectCORSHeaders(rp.corsOrigins))
+	stripProxy.ModifyResponse = injectInstanceIsolation(instanceID)
 	stripProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -90,42 +92,108 @@ func (rp *ReverseProxy) Register(instanceID string, port int) error {
 		origDirectDirector(req)
 		req.Host = target.Host
 		req.Header.Del("Accept-Encoding")
+		injectBasicAuth(req, token)
 	}
-	directProxy.ModifyResponse = chainModifyResponse(injectInstanceIsolation(instanceID), injectCORSHeaders(rp.corsOrigins))
+	directProxy.ModifyResponse = injectInstanceIsolation(instanceID)
 	directProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
-	rp.proxies[instanceID] = stripProxy
-	rp.direct[instanceID] = directProxy
-	rp.ports[instanceID] = port
+	rp.entries[instanceID] = &instanceEntry{
+		stripProxy:  stripProxy,
+		directProxy: directProxy,
+		token:       token,
+	}
 
 	return nil
+}
+
+// injectBasicAuth sets the Authorization header to Basic Auth with
+// username "opencode" and the given password (the instance access token).
+// This allows the CloudCode proxy to authenticate itself to the OpenCode
+// server's native OPENCODE_SERVER_PASSWORD Basic Auth middleware.
+func injectBasicAuth(req *http.Request, token string) {
+	if token == "" {
+		req.Header.Del("Authorization")
+		return
+	}
+	creds := base64.StdEncoding.EncodeToString([]byte("opencode:" + token))
+	req.Header.Set("Authorization", "Basic "+creds)
 }
 
 // Unregister removes a proxy route.
 func (rp *ReverseProxy) Unregister(instanceID string) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
-	delete(rp.proxies, instanceID)
-	delete(rp.direct, instanceID)
-	delete(rp.ports, instanceID)
+	delete(rp.entries, instanceID)
+}
+
+// ValidateToken checks whether the request carries a valid per-instance token.
+// Accepted forms (in priority order):
+//  1. Cookie _cc_inst_token_{id} (browser, set on first authenticated visit)
+//  2. ?token= query parameter (browser first visit / redirect)
+//  3. Authorization: Bearer <token> header (SDK / programmatic clients)
+//
+// Returns the token value if it matches, empty string otherwise.
+func (rp *ReverseProxy) ValidateToken(r *http.Request, instanceID string) bool {
+	rp.mu.RLock()
+	entry, ok := rp.entries[instanceID]
+	rp.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	expected := entry.token
+	if expected == "" {
+		// No token set — allow (backwards compat / no-docker mode)
+		return true
+	}
+
+	// 1. Cookie
+	cookieName := instTokenCookiePrefix + instanceID
+	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
+		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(expected)) == 1 {
+			return true
+		}
+	}
+
+	// 2. ?token= query param
+	if t := r.URL.Query().Get("token"); t != "" {
+		if subtle.ConstantTimeCompare([]byte(t), []byte(expected)) == 1 {
+			return true
+		}
+	}
+
+	// 3. Authorization: Bearer <token>
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		t := strings.TrimPrefix(auth, "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(t), []byte(expected)) == 1 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// SetTokenCookie writes the per-instance token cookie to the response.
+func SetTokenCookie(w http.ResponseWriter, r *http.Request, instanceID, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     instTokenCookiePrefix + instanceID,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   instTokenCookieMaxAge,
+		Expires:  time.Now().Add(instTokenCookieMaxAge * time.Second),
+	})
 }
 
 // ServeHTTP handles proxied requests, stripping /instance/{id} prefix.
 func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, instanceID string) {
-	// Handle CORS preflight before acquiring any locks.
-	if r.Method == http.MethodOptions {
-		if origin := rp.matchOrigin(r); origin != "" {
-			rp.writeCORSPreflight(w, origin)
-			return
-		}
-	}
-
 	rp.mu.RLock()
-	proxy, ok := rp.proxies[instanceID]
+	entry, ok := rp.entries[instanceID]
 	rp.mu.RUnlock()
 
 	if !ok {
@@ -133,23 +201,15 @@ func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, instan
 		return
 	}
 
-	proxy.ServeHTTP(w, r)
+	entry.stripProxy.ServeHTTP(w, r)
 }
 
 // ServeHTTPDirect handles proxied requests, forwarding the original path as-is.
 // Used for Referer-based fallback routing where the path is already correct
 // (e.g. /assets/index-xxx.js, /global/health, WebSocket upgrades).
 func (rp *ReverseProxy) ServeHTTPDirect(w http.ResponseWriter, r *http.Request, instanceID string) {
-	// Handle CORS preflight before acquiring any locks.
-	if r.Method == http.MethodOptions {
-		if origin := rp.matchOrigin(r); origin != "" {
-			rp.writeCORSPreflight(w, origin)
-			return
-		}
-	}
-
 	rp.mu.RLock()
-	proxy, ok := rp.direct[instanceID]
+	entry, ok := rp.entries[instanceID]
 	rp.mu.RUnlock()
 
 	if !ok {
@@ -157,73 +217,15 @@ func (rp *ReverseProxy) ServeHTTPDirect(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	proxy.ServeHTTP(w, r)
-}
-
-// writeCORSPreflight writes a 204 response for OPTIONS preflight requests.
-func (rp *ReverseProxy) writeCORSPreflight(w http.ResponseWriter, origin string) {
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-	w.Header().Set("Access-Control-Max-Age", "86400")
-	w.WriteHeader(http.StatusNoContent)
+	entry.directProxy.ServeHTTP(w, r)
 }
 
 // IsRegistered checks if an instance has a registered proxy.
 func (rp *ReverseProxy) IsRegistered(instanceID string) bool {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
-	_, ok := rp.proxies[instanceID]
+	_, ok := rp.entries[instanceID]
 	return ok
-}
-
-// chainModifyResponse runs multiple ModifyResponse hooks in order.
-// If any hook returns an error, the chain stops and returns that error.
-func chainModifyResponse(hooks ...func(*http.Response) error) func(*http.Response) error {
-	return func(resp *http.Response) error {
-		for _, hook := range hooks {
-			if hook == nil {
-				continue
-			}
-			if err := hook(resp); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-}
-
-// injectCORSHeaders returns a ModifyResponse hook that adds CORS headers to every
-// proxied response. The request's Origin header is matched against the allowlist and
-// reflected back — required for multi-origin CORS with credentials.
-// Empty allowlist disables injection.
-func injectCORSHeaders(origins []string) func(*http.Response) error {
-	if len(origins) == 0 {
-		return nil
-	}
-	originSet := make(map[string]struct{}, len(origins))
-	for _, o := range origins {
-		originSet[strings.ToLower(o)] = struct{}{}
-	}
-	return func(resp *http.Response) error {
-		if resp.Request == nil {
-			return nil
-		}
-		reqOrigin := resp.Request.Header.Get("Origin")
-		if reqOrigin == "" {
-			return nil
-		}
-		if _, ok := originSet[strings.ToLower(reqOrigin)]; !ok {
-			return nil
-		}
-		resp.Header.Set("Access-Control-Allow-Origin", reqOrigin)
-		resp.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-		resp.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-		resp.Header.Set("Access-Control-Allow-Credentials", "true")
-		resp.Header.Set("Access-Control-Max-Age", "86400")
-		return nil
-	}
 }
 
 func generateNonce() string {

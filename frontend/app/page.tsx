@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
-import { api, instanceProxyUrl, Instance } from "@/lib/api";
+import { api, instanceOpenUrl, Instance } from "@/lib/api";
 import AnsiLog from "@/components/AnsiLog";
 import { statusColor, statusLabel } from "@/lib/utils";
 
@@ -113,13 +113,12 @@ function InstanceCard({
               </Link>
             </div>
             <div className="text-xs text-slate-400 mt-0.5 ml-[18px]">
-              {statusLabel(instance.status)} · port {instance.port} · ID{" "}
-              {instance.id}
+              {statusLabel(instance.status)} · ID {instance.id}
             </div>
           </div>
-          {isRunning && (
+          {isRunning && instance.access_token && (
             <a
-              href={instanceProxyUrl(instance.id)}
+              href={instanceOpenUrl(instance.id, instance.access_token)}
               target="_blank"
               rel="noopener noreferrer"
               className="shrink-0 px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white font-medium transition-colors"

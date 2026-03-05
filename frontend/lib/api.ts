@@ -16,10 +16,10 @@ export interface Instance {
   container_id: string;
   status: InstanceStatus;
   error_msg: string;
-  port: number;
   work_dir: string;
   memory_mb: number;
   cpu_cores: number;
+  access_token: string;
   created_at: string;
   updated_at: string;
 }
@@ -82,6 +82,17 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? BASE;
 
 export function instanceProxyUrl(id: string): string {
   return `${BACKEND_URL}/instance/${id}/`;
+}
+
+/**
+ * Build the URL used to open an instance's web UI in the browser.
+ * Includes the per-instance access token as a ?token= query param so the
+ * proxy can validate it and set the token cookie for subsequent requests.
+ */
+export function instanceOpenUrl(id: string, accessToken: string): string {
+  const base = `${BACKEND_URL}/instance/${id}/`;
+  if (!accessToken) return base;
+  return `${base}?token=${encodeURIComponent(accessToken)}`;
 }
 
 export function wsBase(): string {
@@ -231,6 +242,11 @@ export const api = {
 
     restart(id: string): Promise<Instance> {
       return request("POST", `/api/instances/${id}/restart`);
+    },
+
+    /** Generates a new access token for the instance. Returns the new token. */
+    regenerateToken(id: string): Promise<{ access_token: string }> {
+      return request("POST", `/api/instances/${id}/regenerate-token`);
     },
 
     /** Returns updated instance, null if unchanged (204), or {deleted:true} if removed */

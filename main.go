@@ -25,23 +25,17 @@ var embeddedSPA embed.FS
 
 func main() {
 	var (
-		addr            = flag.String("addr", ":8080", "HTTP listen address")
-		dataDir         = flag.String("data", "./data", "Data directory for SQLite database")
-		imgName         = flag.String("image", "ghcr.io/naiba/cloudcode-base:latest", "Docker image name for opencode instances")
-		noDocker        = flag.Bool("no-docker", false, "Skip Docker initialization (for UI preview)")
-		corsOrigin      = flag.String("cors-origin", "", "Comma-separated CORS origins for the platform API, e.g. http://localhost:3000,http://localhost:4000")
-		accessToken     = flag.String("access-token", "", "Required bearer token / password for accessing the platform")
-		proxyCORSOrigin = flag.String("proxy-cors-origin", "", "Comma-separated CORS origins injected into proxied instance responses (defaults to --cors-origin if unset)")
+		addr        = flag.String("addr", ":8080", "HTTP listen address")
+		dataDir     = flag.String("data", "./data", "Data directory for SQLite database")
+		imgName     = flag.String("image", "ghcr.io/naiba/cloudcode-base:latest", "Docker image name for opencode instances")
+		noDocker    = flag.Bool("no-docker", false, "Skip Docker initialization (for UI preview)")
+		corsOrigin  = flag.String("cors-origin", "", "Comma-separated CORS origins for the platform API, e.g. http://localhost:3000,http://localhost:4000")
+		accessToken = flag.String("access-token", "", "Required bearer token / password for accessing the platform")
 	)
 	flag.Parse()
 
 	if *accessToken == "" {
 		log.Fatal("--access-token is required. Set a strong secret token to protect the platform.")
-	}
-
-	// If --proxy-cors-origin not explicitly set, inherit from --cors-origin.
-	if *proxyCORSOrigin == "" {
-		*proxyCORSOrigin = *corsOrigin
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -83,9 +77,8 @@ func main() {
 	}
 
 	corsOrigins := parseOrigins(*corsOrigin)
-	proxyCORSOrigins := parseOrigins(*proxyCORSOrigin)
 
-	rp := proxy.New(proxyCORSOrigins)
+	rp := proxy.New()
 	h := handler.New(db, dm, rp, cfgMgr, spaFiles, *accessToken, corsOrigins)
 
 	mux := http.NewServeMux()

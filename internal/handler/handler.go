@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -34,59 +33,22 @@ type wsTokenEntry struct {
 }
 
 type Handler struct {
-	store        *store.Store
-	docker       *docker.Manager
-	proxy        *proxy.ReverseProxy
-	config       *config.Manager
-	spaFS        fs.FS
-	portPool     *PortPool
-	accessToken  string
-	corsOrigins  []string // allowed dev origins for WS CheckOrigin
-	sessions     sync.Map // sessionID (string) → struct{}
-	wsTokens     sync.Map // one-time WS token (string) → wsTokenEntry
+	store         *store.Store
+	docker        *docker.Manager
+	proxy         *proxy.ReverseProxy
+	config        *config.Manager
+	spaFS         fs.FS
+	accessToken   string
+	corsOrigins   []string // allowed dev origins for WS CheckOrigin
+	sessions      sync.Map // sessionID (string) → struct{}
+	wsTokens      sync.Map // one-time WS token (string) → wsTokenEntry
 	loginAttempts sync.Map // IP (string) → *loginState
 }
 
 // loginState tracks per-IP login rate limiting.
 type loginState struct {
-	count    atomic.Int32
-	resetAt  atomic.Int64 // Unix nanoseconds
-}
-
-// PortPool allocates ports for new instances.
-type PortPool struct {
-	mu    sync.Mutex
-	start int
-	end   int
-	used  map[int]bool
-}
-
-func NewPortPool(start, end int) *PortPool {
-	return &PortPool{start: start, end: end, used: make(map[int]bool)}
-}
-
-func (pp *PortPool) Allocate() (int, error) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-	for p := pp.start; p <= pp.end; p++ {
-		if !pp.used[p] {
-			pp.used[p] = true
-			return p, nil
-		}
-	}
-	return 0, fmt.Errorf("no available ports in range %d-%d", pp.start, pp.end)
-}
-
-func (pp *PortPool) Release(port int) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-	delete(pp.used, port)
-}
-
-func (pp *PortPool) MarkUsed(port int) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-	pp.used[port] = true
+	count   atomic.Int32
+	resetAt atomic.Int64 // Unix nanoseconds
 }
 
 // New creates a new Handler. spaFiles is an fs.FS rooted at the frontend dist
@@ -99,19 +61,26 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 		proxy:       rp,
 		config:      cfgMgr,
 		spaFS:       spaFiles,
-		portPool:    NewPortPool(10000, 10100),
 		accessToken: accessToken,
 		corsOrigins: corsOrigins,
 	}
 
-	instances, err := s.List()
-	if err == nil {
-		for _, inst := range instances {
-			if inst.Port > 0 {
-				h.portPool.MarkUsed(inst.Port)
-			}
-			if inst.Status == "running" && inst.Port > 0 {
-				_ = rp.Register(inst.ID, inst.Port)
+	// Re-register running instances into the proxy on startup.
+	// Fetch the current container IP so the proxy target is correct.
+	if dm != nil {
+		instances, err := s.List()
+		if err == nil {
+			for _, inst := range instances {
+				if inst.Status == "running" && inst.ContainerID != "" {
+					ip, err := dm.GetContainerIP(context.Background(), inst.ContainerID)
+					if err != nil {
+						log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
+						continue
+					}
+					if err := rp.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil {
+						log.Printf("Warning: could not register proxy for instance %s: %v", inst.ID, err)
+					}
+				}
 			}
 		}
 	}
@@ -157,6 +126,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/instances/{id}/stop", h.auth(http.HandlerFunc(h.apiStopInstance)))
 	mux.Handle("POST /api/instances/{id}/restart", h.auth(http.HandlerFunc(h.apiRestartInstance)))
 	mux.Handle("GET /api/instances/{id}/status", h.auth(http.HandlerFunc(h.apiInstanceStatus)))
+	mux.Handle("POST /api/instances/{id}/regenerate-token", h.auth(http.HandlerFunc(h.apiRegenerateToken)))
 
 	// --- Batch status (protected) ---
 	mux.Handle("POST /api/status/instances", h.auth(http.HandlerFunc(h.apiBatchInstanceStatus)))
@@ -360,16 +330,18 @@ func (h *Handler) consumeWSToken(token string) bool {
 
 // instanceResponse is a safe subset of store.Instance for API responses.
 // EnvVars is deliberately omitted to avoid leaking API keys and secrets.
+// AccessToken is included so authenticated users can retrieve the token for
+// SDK access or to pass to opencode attach.
 type instanceResponse struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	ContainerID string  `json:"container_id"`
 	Status      string  `json:"status"`
 	ErrorMsg    string  `json:"error_msg"`
-	Port        int     `json:"port"`
 	WorkDir     string  `json:"work_dir"`
 	MemoryMB    int     `json:"memory_mb"`
 	CPUCores    float64 `json:"cpu_cores"`
+	AccessToken string  `json:"access_token"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
 }
@@ -381,10 +353,10 @@ func toInstanceResponse(inst *store.Instance) instanceResponse {
 		ContainerID: inst.ContainerID,
 		Status:      inst.Status,
 		ErrorMsg:    inst.ErrorMsg,
-		Port:        inst.Port,
 		WorkDir:     inst.WorkDir,
 		MemoryMB:    inst.MemoryMB,
 		CPUCores:    inst.CPUCores,
+		AccessToken: inst.AccessToken,
 		CreatedAt:   inst.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:   inst.UpdatedAt.Format(time.RFC3339),
 	}
@@ -487,20 +459,23 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, err := h.portPool.Allocate()
+	// Generate a per-instance access token (used for both proxy auth and
+	// OPENCODE_SERVER_PASSWORD Basic Auth inside the container).
+	accessToken, err := newSessionID() // reuse same CSPRNG helper (32-byte hex)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "no available ports")
+		writeError(w, http.StatusInternalServerError, "failed to generate access token")
 		return
 	}
 
 	inst := &store.Instance{
-		Name:     req.Name,
-		Status:   "created",
-		Port:     port,
-		WorkDir:  "/root",
-		EnvVars:  make(map[string]string),
-		MemoryMB: req.MemoryMB,
-		CPUCores: req.CPUCores,
+		Name:        req.Name,
+		Status:      "created",
+		Port:        docker.ContainerPort(),
+		WorkDir:     "/root",
+		EnvVars:     make(map[string]string),
+		MemoryMB:    req.MemoryMB,
+		CPUCores:    req.CPUCores,
+		AccessToken: accessToken,
 	}
 
 	// #13: retry on ID collision (astronomically rare but correct to handle)
@@ -515,7 +490,6 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if createErr != nil {
-		h.portPool.Release(port)
 		writeError(w, http.StatusInternalServerError, "failed to create instance")
 		return
 	}
@@ -524,8 +498,6 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 		containerID, err := h.docker.CreateContainer(r.Context(), inst) // #7 use r.Context()
 		if err != nil {
 			log.Printf("Error creating container for %s: %v", inst.ID, err)
-			// #6: release port so it can be reused since container creation failed
-			h.portPool.Release(inst.Port)
 			inst.Status = "error"
 			inst.ErrorMsg = err.Error()
 			if updateErr := h.store.Update(inst); updateErr != nil {
@@ -537,7 +509,10 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 			if updateErr := h.store.Update(inst); updateErr != nil {
 				log.Printf("Warning: failed to update instance %s: %v", inst.ID, updateErr)
 			}
-			if err := h.proxy.Register(inst.ID, inst.Port); err != nil {
+			// Get container IP on cloudcode-net for direct proxy routing.
+			if ip, err := h.docker.GetContainerIP(r.Context(), containerID); err != nil {
+				log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
+			} else if err := h.proxy.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil {
 				log.Printf("Error registering proxy for %s: %v", inst.ID, err)
 			}
 		}
@@ -563,7 +538,6 @@ func (h *Handler) apiDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.proxy.Unregister(id)
-	h.portPool.Release(inst.Port)
 	h.config.RemoveInstanceData(id)
 
 	if err := h.store.Delete(id); err != nil {
@@ -612,7 +586,9 @@ func (h *Handler) apiStartInstance(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Update(inst); err != nil { // #9
 		log.Printf("Warning: failed to update instance %s: %v", inst.ID, err)
 	}
-	if err := h.proxy.Register(inst.ID, inst.Port); err != nil { // #9
+	if ip, err := h.docker.GetContainerIP(r.Context(), inst.ContainerID); err != nil {
+		log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
+	} else if err := h.proxy.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil { // #9
 		log.Printf("Warning: failed to register proxy for %s: %v", inst.ID, err)
 	}
 
@@ -682,7 +658,9 @@ func (h *Handler) apiRestartInstance(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Update(inst); err != nil { // #9
 		log.Printf("Warning: failed to update instance %s: %v", inst.ID, err)
 	}
-	if err := h.proxy.Register(inst.ID, inst.Port); err != nil { // #9
+	if ip, err := h.docker.GetContainerIP(r.Context(), containerID); err != nil {
+		log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
+	} else if err := h.proxy.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil { // #9
 		log.Printf("Warning: failed to register proxy for %s: %v", inst.ID, err)
 	}
 
@@ -791,6 +769,46 @@ func (h *Handler) apiBatchInstanceStatus(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"changed": changed})
+}
+
+// apiRegenerateToken generates a new access token for an instance.
+// The new token is stored in the DB, the proxy registration is updated, and the
+// new token is returned in the response. The instance must be authenticated with
+// the platform session (standard auth middleware applies).
+func (h *Handler) apiRegenerateToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	inst, err := h.store.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	newToken, err := newSessionID()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	inst.AccessToken = newToken
+	if err := h.store.Update(inst); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update token")
+		return
+	}
+
+	// Update the proxy with the new token so future requests are validated correctly.
+	// Note: existing containers still have the old OPENCODE_SERVER_PASSWORD — a restart
+	// is required to propagate the new token to OpenCode's Basic Auth middleware.
+	if h.proxy.IsRegistered(id) {
+		if h.docker != nil && inst.ContainerID != "" {
+			if ip, err := h.docker.GetContainerIP(r.Context(), inst.ContainerID); err != nil {
+				log.Printf("Warning: could not get IP for instance %s on token regeneration: %v", id, err)
+			} else {
+				_ = h.proxy.Register(id, ip, docker.ContainerPort(), newToken)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"access_token": newToken})
 }
 
 // --- System API ---
@@ -1255,6 +1273,21 @@ const instanceCookieName = "_cc_inst"
 
 func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	// Validate the per-instance access token before proxying.
+	if !h.proxy.ValidateToken(r, id) {
+		// Check if token was provided as ?token= query param — if so it was
+		// structurally invalid (wrong value); otherwise it is simply missing.
+		if r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != "" {
+			writeError(w, http.StatusUnauthorized, "invalid instance token")
+		} else {
+			writeError(w, http.StatusUnauthorized, "instance token required")
+		}
+		return
+	}
+
+	// Set the routing cookie so catch-all proxy requests know which instance
+	// to route to (for SPA asset requests that don't carry the /instance/{id}/ prefix).
 	http.SetCookie(w, &http.Cookie{
 		Name:     instanceCookieName,
 		Value:    id,
@@ -1263,6 +1296,20 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Secure:   r.TLS != nil, // #18: set Secure flag when serving over HTTPS
 		SameSite: http.SameSiteLaxMode,
 	})
+
+	// If the token was provided as ?token= query param, set the per-instance
+	// token cookie so subsequent requests (assets, WS) don't need it in the URL.
+	if t := r.URL.Query().Get("token"); t != "" {
+		proxy.SetTokenCookie(w, r, id, t)
+		// Redirect to strip the token from the URL (avoid token in browser history/referer).
+		cleanURL := *r.URL
+		q := cleanURL.Query()
+		q.Del("token")
+		cleanURL.RawQuery = q.Encode()
+		http.Redirect(w, r, cleanURL.String(), http.StatusFound)
+		return
+	}
+
 	h.proxy.ServeHTTP(w, r, id)
 }
 
@@ -1305,6 +1352,11 @@ func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
 	// Proxied asset request (Referer or cookie based) — only for authenticated users.
 	if h.isAuthenticated(r) {
 		if instanceID := h.resolveInstanceID(r); instanceID != "" {
+			// Validate the per-instance token (via cookie) before forwarding.
+			if !h.proxy.ValidateToken(r, instanceID) {
+				writeError(w, http.StatusUnauthorized, "instance token required")
+				return
+			}
 			h.proxy.ServeHTTPDirect(w, r, instanceID)
 			return
 		}

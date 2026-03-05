@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, instanceProxyUrl, Instance } from "@/lib/api";
+import { api, instanceOpenUrl, Instance } from "@/lib/api";
 import AnsiLog from "@/components/AnsiLog";
 import { statusColor } from "@/lib/utils";
 
@@ -16,6 +16,90 @@ function Field({ label, value }: { label: string; value: string }) {
       <span className="text-sm text-slate-200 font-mono break-all">
         {value || "—"}
       </span>
+    </div>
+  );
+}
+
+// ---- Token field with reveal-on-click and copy --------------------------------
+
+function TokenField({ instanceId, token }: { instanceId: string; token: string }) {
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [currentToken, setCurrentToken] = useState(token);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(currentToken).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleRegenerate = async () => {
+    if (
+      !confirm(
+        "Regenerate the access token? The current token will stop working immediately. You will need to restart the instance for the new token to take effect inside the OpenCode server."
+      )
+    )
+      return;
+    setRegenerating(true);
+    try {
+      const res = await api.instances.regenerateToken(instanceId);
+      setCurrentToken(res.access_token);
+      setRevealed(true);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  return (
+    <div className="col-span-2 flex flex-col gap-1.5">
+      <span className="text-xs text-slate-500 uppercase tracking-wide">
+        Access Token
+      </span>
+      <div className="flex items-center gap-2 flex-wrap">
+        <code
+          className="flex-1 min-w-0 bg-slate-900 rounded-lg px-3 py-2 text-sm font-mono break-all cursor-pointer select-all"
+          onClick={() => setRevealed((v) => !v)}
+          title="Click to reveal / hide"
+        >
+          {revealed ? (
+            <span className="text-green-400">{currentToken}</span>
+          ) : (
+            <span className="text-slate-600">{"•".repeat(32)}</span>
+          )}
+        </code>
+        <div className="flex gap-1.5 shrink-0">
+          <button
+            onClick={() => setRevealed((v) => !v)}
+            className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors"
+          >
+            {revealed ? "Hide" : "Reveal"}
+          </button>
+          <button
+            onClick={handleCopy}
+            className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors"
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
+          <button
+            onClick={handleRegenerate}
+            disabled={regenerating}
+            className="px-3 py-2 bg-amber-900/60 hover:bg-amber-800 text-amber-300 text-xs rounded-lg transition-colors disabled:opacity-50"
+          >
+            {regenerating ? "…" : "Regenerate"}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-slate-600">
+        SDK:{" "}
+        <code className="text-slate-500">
+          opencode attach {instanceOpenUrl(instanceId, currentToken)} --password{" "}
+          {revealed ? currentToken : "<token>"}
+        </code>
+      </p>
     </div>
   );
 }
@@ -158,9 +242,9 @@ export default function InstanceDetailPage() {
             {instance.status}
           </span>
         </div>
-        {isRunning && (
+        {isRunning && instance.access_token && (
           <a
-            href={instanceProxyUrl(instance.id)}
+            href={instanceOpenUrl(instance.id, instance.access_token)}
             target="_blank"
             rel="noopener noreferrer"
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
@@ -224,12 +308,12 @@ export default function InstanceDetailPage() {
       {/* Details */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 grid grid-cols-2 gap-4 mb-6">
         <Field label="ID" value={instance.id} />
-        <Field label="Port" value={String(instance.port)} />
         <Field
           label="Container ID"
           value={instance.container_id?.slice(0, 16) ?? ""}
         />
         <Field label="Work Dir" value={instance.work_dir} />
+        <Field label="Status" value={instance.status} />
         <Field
           label="Memory"
           value={
@@ -259,6 +343,7 @@ export default function InstanceDetailPage() {
             <Field label="Error" value={instance.error_msg} />
           </div>
         )}
+        <TokenField instanceId={instance.id} token={instance.access_token} />
       </div>
 
       {/* Logs */}

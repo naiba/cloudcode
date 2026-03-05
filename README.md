@@ -47,8 +47,7 @@ All API, WebSocket, and proxy routes require authentication. The platform uses a
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--access-token` | *(required)* | Admin token. Server refuses to start without it. |
-| `--cors-origin` | `""` | Allowed CORS origin for the API (dev only, e.g. `http://localhost:3000`). |
-| `--proxy-cors-origin` | `""` | CORS origin injected into proxied instance responses. Empty = disabled. |
+| `--cors-origin` | `""` | Allowed CORS origins for the platform API (dev only). Comma-separated. |
 
 ### Rate limiting
 
@@ -74,14 +73,17 @@ Browser → CloudCode Platform (Go JSON API + Next.js frontend)
                ├── /login           — Login page (public)
                ├── Dashboard        — List / manage instances
                ├── Settings         — Global config editor
-               └── /instance/{id}/  — Reverse proxy → container:port
-                                          │
+               └── /instance/{id}/  — Reverse proxy (token-validated)
+                                          │  cloudcode-net (Docker bridge)
                               ┌────────────┼────────────┐
                               ▼            ▼            ▼
                          Container 1  Container 2  Container N
                          (opencode    (opencode    (opencode
-                          web :10000)  web :10001)  web :10002)
+                          web :4096)   web :4096)   web :4096)
+                         [Basic Auth] [Basic Auth] [Basic Auth]
 ```
+
+Container ports are **not published to the host**. All traffic routes through the Go proxy via the internal `cloudcode-net` Docker bridge network. Each container runs OpenCode with `OPENCODE_SERVER_PASSWORD` set to its unique access token, providing defense-in-depth.
 
 ```
 main.go                          Entry point, starts HTTP server, embeds frontend/dist
@@ -185,13 +187,11 @@ docker build -t cloudcode:latest -f Dockerfile.platform .
 
 > **Important:** `go build` embeds `frontend/dist/` at compile time via `//go:embed`. Always run `bun run build` in `frontend/` before `go build` when frontend changes are made.
 
-## Port Allocation
-
-The platform assigns one port per instance from the range `10000–10100` (101 ports max). Ports are tracked in SQLite and released when an instance is deleted.
-
 ## Security
 
-- **Token auth** — All routes protected by session cookie; login rate-limited to 10 attempts / IP / 60s
+- **Platform token auth** — All routes protected by session cookie; login rate-limited to 10 attempts / IP / 60s
+- **Per-instance access tokens** — Each instance has a unique 32-byte hex token. Required to access the web UI (`?token=` or `_cc_inst_token_{id}` cookie) and for SDK/CLI access (`Authorization: Bearer` or `--password`). Tokens are enforced at two layers: the CloudCode proxy and OpenCode's native `OPENCODE_SERVER_PASSWORD` Basic Auth inside the container.
+- **No host port exposure** — Container ports are not published to the host. Traffic routes exclusively through the CloudCode proxy via `cloudcode-net`.
 - **Session management** — Existing session invalidated on re-login; sessions stored in memory (cleared on restart)
 - **WS tokens** — One-time tokens for cross-origin WebSocket auth; 60s TTL, pruned by background goroutine
 - **Path traversal protection** — All config file operations validated by `containedPath`; `dirName` restricted to an allowlist
