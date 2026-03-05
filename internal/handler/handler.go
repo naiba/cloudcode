@@ -66,18 +66,19 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 	}
 
 	// Re-register running instances into the proxy on startup.
-	// Fetch the current container IP so the proxy target is correct.
+	// Use GetContainerIPAndPort to correctly handle legacy containers that
+	// may listen on a non-default port (created before port-pool removal).
 	if dm != nil {
 		instances, err := s.List()
 		if err == nil {
 			for _, inst := range instances {
 				if inst.Status == "running" && inst.ContainerID != "" {
-					ip, err := dm.GetContainerIP(context.Background(), inst.ContainerID)
+					ip, port, err := dm.GetContainerIPAndPort(context.Background(), inst.ContainerID)
 					if err != nil {
-						log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
+						log.Printf("Warning: could not get IP/port for instance %s: %v", inst.ID, err)
 						continue
 					}
-					if err := rp.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil {
+					if err := rp.Register(inst.ID, ip, port, inst.AccessToken); err != nil {
 						log.Printf("Warning: could not register proxy for instance %s: %v", inst.ID, err)
 					}
 				}
@@ -509,10 +510,10 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 			if updateErr := h.store.Update(inst); updateErr != nil {
 				log.Printf("Warning: failed to update instance %s: %v", inst.ID, updateErr)
 			}
-			// Get container IP on cloudcode-net for direct proxy routing.
-			if ip, err := h.docker.GetContainerIP(r.Context(), containerID); err != nil {
+			// Get container IP/port on cloudcode-net for direct proxy routing.
+			if ip, port, err := h.docker.GetContainerIPAndPort(r.Context(), containerID); err != nil {
 				log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
-			} else if err := h.proxy.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil {
+			} else if err := h.proxy.Register(inst.ID, ip, port, inst.AccessToken); err != nil {
 				log.Printf("Error registering proxy for %s: %v", inst.ID, err)
 			}
 		}
@@ -586,9 +587,9 @@ func (h *Handler) apiStartInstance(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Update(inst); err != nil { // #9
 		log.Printf("Warning: failed to update instance %s: %v", inst.ID, err)
 	}
-	if ip, err := h.docker.GetContainerIP(r.Context(), inst.ContainerID); err != nil {
+	if ip, port, err := h.docker.GetContainerIPAndPort(r.Context(), inst.ContainerID); err != nil {
 		log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
-	} else if err := h.proxy.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil { // #9
+	} else if err := h.proxy.Register(inst.ID, ip, port, inst.AccessToken); err != nil { // #9
 		log.Printf("Warning: failed to register proxy for %s: %v", inst.ID, err)
 	}
 
@@ -658,9 +659,9 @@ func (h *Handler) apiRestartInstance(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Update(inst); err != nil { // #9
 		log.Printf("Warning: failed to update instance %s: %v", inst.ID, err)
 	}
-	if ip, err := h.docker.GetContainerIP(r.Context(), containerID); err != nil {
+	if ip, port, err := h.docker.GetContainerIPAndPort(r.Context(), containerID); err != nil {
 		log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
-	} else if err := h.proxy.Register(inst.ID, ip, docker.ContainerPort(), inst.AccessToken); err != nil { // #9
+	} else if err := h.proxy.Register(inst.ID, ip, port, inst.AccessToken); err != nil { // #9
 		log.Printf("Warning: failed to register proxy for %s: %v", inst.ID, err)
 	}
 
@@ -798,13 +799,11 @@ func (h *Handler) apiRegenerateToken(w http.ResponseWriter, r *http.Request) {
 	// Update the proxy with the new token so future requests are validated correctly.
 	// Note: existing containers still have the old OPENCODE_SERVER_PASSWORD — a restart
 	// is required to propagate the new token to OpenCode's Basic Auth middleware.
-	if h.proxy.IsRegistered(id) {
-		if h.docker != nil && inst.ContainerID != "" {
-			if ip, err := h.docker.GetContainerIP(r.Context(), inst.ContainerID); err != nil {
-				log.Printf("Warning: could not get IP for instance %s on token regeneration: %v", id, err)
-			} else {
-				_ = h.proxy.Register(id, ip, docker.ContainerPort(), newToken)
-			}
+	if h.docker != nil && inst.ContainerID != "" {
+		if ip, port, err := h.docker.GetContainerIPAndPort(r.Context(), inst.ContainerID); err != nil {
+			log.Printf("Warning: could not get IP for instance %s on token regeneration: %v", id, err)
+		} else {
+			_ = h.proxy.Register(id, ip, port, newToken)
 		}
 	}
 

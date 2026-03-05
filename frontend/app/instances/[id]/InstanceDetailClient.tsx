@@ -20,10 +20,9 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ---- Token field with reveal-on-click and copy --------------------------------
+// ---- Token field with copy and regenerate ------------------------------------
 
 function TokenField({ instanceId, token }: { instanceId: string; token: string }) {
-  const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [currentToken, setCurrentToken] = useState(token);
@@ -46,7 +45,6 @@ function TokenField({ instanceId, token }: { instanceId: string; token: string }
     try {
       const res = await api.instances.regenerateToken(instanceId);
       setCurrentToken(res.access_token);
-      setRevealed(true);
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     } finally {
@@ -60,24 +58,10 @@ function TokenField({ instanceId, token }: { instanceId: string; token: string }
         Access Token
       </span>
       <div className="flex items-center gap-2 flex-wrap">
-        <code
-          className="flex-1 min-w-0 bg-slate-900 rounded-lg px-3 py-2 text-sm font-mono break-all cursor-pointer select-all"
-          onClick={() => setRevealed((v) => !v)}
-          title="Click to reveal / hide"
-        >
-          {revealed ? (
-            <span className="text-green-400">{currentToken}</span>
-          ) : (
-            <span className="text-slate-600">{"•".repeat(32)}</span>
-          )}
+        <code className="flex-1 min-w-0 bg-slate-900 rounded-lg px-3 py-2 text-sm font-mono text-green-400 break-all select-all">
+          {currentToken}
         </code>
         <div className="flex gap-1.5 shrink-0">
-          <button
-            onClick={() => setRevealed((v) => !v)}
-            className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors"
-          >
-            {revealed ? "Hide" : "Reveal"}
-          </button>
           <button
             onClick={handleCopy}
             className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors"
@@ -96,8 +80,7 @@ function TokenField({ instanceId, token }: { instanceId: string; token: string }
       <p className="text-xs text-slate-600">
         SDK:{" "}
         <code className="text-slate-500">
-          opencode attach {instanceOpenUrl(instanceId, currentToken)} --password{" "}
-          {revealed ? currentToken : "<token>"}
+          opencode attach http://localhost:8080/instance/{instanceId}/ --password {currentToken}
         </code>
       </p>
     </div>
@@ -284,12 +267,18 @@ export default function InstanceDetailPage() {
             Restart
           </button>
         )}
-        <Link
-          href={`/instances/${id}/terminal`}
-          className="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-200"
-        >
-          Terminal
-        </Link>
+        {isRunning ? (
+          <Link
+            href={`/instances/${id}/terminal`}
+            className="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-200"
+          >
+            Terminal
+          </Link>
+        ) : (
+          <span className="px-4 py-2 text-sm bg-slate-800 rounded-lg text-slate-600 cursor-not-allowed">
+            Terminal
+          </span>
+        )}
         <button
           disabled={busy}
           onClick={doDelete}
