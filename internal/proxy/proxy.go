@@ -320,6 +320,17 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
 	const maxHTMLSize = 10 << 20 // 10 MB
 
 	return func(resp *http.Response) error {
+		// Strip CORS headers from the upstream OpenCode response.
+		// OpenCode sets its own Access-Control-* headers; if we forward them
+		// alongside our own the browser receives duplicate values and rejects
+		// the response. We own the CORS policy at the proxy layer.
+		resp.Header.Del("Access-Control-Allow-Origin")
+		resp.Header.Del("Access-Control-Allow-Credentials")
+		resp.Header.Del("Access-Control-Allow-Methods")
+		resp.Header.Del("Access-Control-Allow-Headers")
+		resp.Header.Del("Access-Control-Expose-Headers")
+		resp.Header.Del("Access-Control-Max-Age")
+
 		ct := resp.Header.Get("Content-Type")
 		if !strings.Contains(ct, "text/html") {
 			return nil
