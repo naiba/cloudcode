@@ -1,33 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
-import { api, instanceProxyUrl, Instance, InstanceStatus } from "@/lib/api";
+import { api, instanceProxyUrl, Instance } from "@/lib/api";
 import AnsiLog from "@/components/AnsiLog";
-
-// ---- helpers ---------------------------------------------------------------
-
-function statusColor(s: InstanceStatus): string {
-  switch (s) {
-    case "running":
-      return "bg-green-500";
-    case "stopped":
-    case "created":
-      return "bg-yellow-500";
-    case "exited":
-      return "bg-slate-500";
-    case "error":
-      return "bg-red-500";
-    case "removed":
-      return "bg-slate-600";
-    default:
-      return "bg-slate-500";
-  }
-}
-
-function statusLabel(s: InstanceStatus): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
+import { statusColor, statusLabel } from "@/lib/utils";
 
 // ---- Log modal -------------------------------------------------------------
 
@@ -251,40 +228,41 @@ export default function DashboardPage() {
   }, [loadInstances]);
 
   // Single batch poller for all instances — one request every 10 s instead of
-  // one per card.
+  // one per card. instancesRef keeps a stable reference so the poll closure
+  // always sees current state without being added to the effect deps.
+  const instancesRef = useRef<Instance[]>([]);
+  useEffect(() => {
+    instancesRef.current = instances;
+  }, [instances]);
+
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      setInstances((prev) => {
-        if (prev.length === 0) return prev;
-        const statuses: Record<string, string> = {};
-        for (const inst of prev) statuses[inst.id] = inst.status;
+      const current = instancesRef.current;
+      if (current.length === 0) {
+        timer = setTimeout(poll, 10000);
+        return;
+      }
+      const statuses: Record<string, string> = {};
+      for (const inst of current) statuses[inst.id] = inst.status;
 
-        api.instances
-          .pollAllStatus(statuses)
-          .then((changed) => {
-            setInstances((current) => {
-              let next = current;
-              for (const [id, updated] of Object.entries(changed)) {
-                if (updated === null) {
-                  // Instance deleted
-                  next = next.filter((i) => i.id !== id);
-                } else {
-                  next = next.map((i) => (i.id === id ? updated : i));
-                }
-              }
-              return next;
-            });
-          })
-          .catch(() => {
-            // ignore transient poll errors
-          })
-          .finally(() => {
-            timer = setTimeout(poll, 10000);
-          });
-
-        return prev; // return synchronously unchanged; async update above
-      });
+      try {
+        const changed = await api.instances.pollAllStatus(statuses);
+        setInstances((prev) => {
+          let next = prev;
+          for (const [id, updated] of Object.entries(changed)) {
+            if (updated === null) {
+              next = next.filter((i) => i.id !== id);
+            } else {
+              next = next.map((i) => (i.id === id ? updated : i));
+            }
+          }
+          return next;
+        });
+      } catch {
+        // ignore transient poll errors
+      }
+      timer = setTimeout(poll, 10000);
     };
     timer = setTimeout(poll, 10000);
     return () => clearTimeout(timer);

@@ -269,10 +269,10 @@ export const api = {
     ): Promise<Record<string, Instance | null>> {
       const data = await request<{ changed: Record<string, Instance | null> }>(
         "POST",
-        "/api/instances/status",
+        "/api/status/instances",
         { ids: statuses }
       );
-      return data.changed;
+      return data?.changed ?? {};
     },
   },
 

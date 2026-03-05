@@ -7,13 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,16 +28,29 @@ import (
 
 const sessionCookieName = "_cc_session"
 
+// wsTokenEntry holds a one-time WebSocket auth token with its creation time.
+type wsTokenEntry struct {
+	createdAt time.Time
+}
+
 type Handler struct {
-	store       *store.Store
-	docker      *docker.Manager
-	proxy       *proxy.ReverseProxy
-	config      *config.Manager
-	portPool    *PortPool
-	accessToken string
-	corsOrigin  string   // allowed dev origin for WS CheckOrigin
-	sessions    sync.Map // sessionID (string) → struct{}
-	wsTokens    sync.Map // one-time WS token (string) → struct{}
+	store        *store.Store
+	docker       *docker.Manager
+	proxy        *proxy.ReverseProxy
+	config       *config.Manager
+	spaFS        fs.FS
+	portPool     *PortPool
+	accessToken  string
+	corsOrigin   string   // allowed dev origin for WS CheckOrigin
+	sessions     sync.Map // sessionID (string) → struct{}
+	wsTokens     sync.Map // one-time WS token (string) → wsTokenEntry
+	loginAttempts sync.Map // IP (string) → *loginState
+}
+
+// loginState tracks per-IP login rate limiting.
+type loginState struct {
+	count    atomic.Int32
+	resetAt  atomic.Int64 // Unix nanoseconds
 }
 
 // PortPool allocates ports for new instances.
@@ -75,12 +89,16 @@ func (pp *PortPool) MarkUsed(port int) {
 	pp.used[port] = true
 }
 
-func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *config.Manager, accessToken, corsOrigin string) *Handler {
+// New creates a new Handler. spaFiles is an fs.FS rooted at the frontend dist
+// directory (must contain index.html). Pass nil to disable SPA serving (returns
+// 404 for all non-API routes).
+func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *config.Manager, spaFiles fs.FS, accessToken, corsOrigin string) *Handler {
 	h := &Handler{
 		store:       s,
 		docker:      dm,
 		proxy:       rp,
 		config:      cfgMgr,
+		spaFS:       spaFiles,
 		portPool:    NewPortPool(10000, 10100),
 		accessToken: accessToken,
 		corsOrigin:  corsOrigin,
@@ -98,7 +116,27 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 		}
 	}
 
+	// Background goroutine: prune expired one-time WS tokens every 60 s.
+	go h.pruneWSTokens()
+
 	return h
+}
+
+const wsTokenTTL = 60 * time.Second
+
+// pruneWSTokens periodically removes WS tokens older than wsTokenTTL.
+func (h *Handler) pruneWSTokens() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		h.wsTokens.Range(func(k, v any) bool {
+			if e, ok := v.(wsTokenEntry); ok && now.Sub(e.createdAt) > wsTokenTTL {
+				h.wsTokens.Delete(k)
+			}
+			return true
+		})
+	}
 }
 
 // RegisterRoutes sets up all HTTP routes.
@@ -121,7 +159,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/instances/{id}/status", h.auth(http.HandlerFunc(h.apiInstanceStatus)))
 
 	// --- Batch status (protected) ---
-	mux.Handle("POST /api/instances/status", h.auth(http.HandlerFunc(h.apiBatchInstanceStatus)))
+	mux.Handle("POST /api/status/instances", h.auth(http.HandlerFunc(h.apiBatchInstanceStatus)))
 
 	// --- System API (protected) ---
 	mux.Handle("GET /api/system/resources", h.auth(http.HandlerFunc(h.apiSystemResources)))
@@ -221,7 +259,37 @@ func clearSessionCookie(w http.ResponseWriter) {
 
 // --- Auth API handlers ---
 
+// loginRateLimit allows 10 attempts per IP per 60 s window.
+const (
+	loginMaxAttempts = 10
+	loginWindow      = 60 * time.Second
+)
+
+func (h *Handler) loginAllowed(ip string) bool {
+	now := time.Now().UnixNano()
+	raw, _ := h.loginAttempts.LoadOrStore(ip, &loginState{})
+	ls := raw.(*loginState)
+
+	resetAt := ls.resetAt.Load()
+	if now > resetAt {
+		ls.count.Store(0)
+		ls.resetAt.Store(now + int64(loginWindow))
+	}
+
+	return ls.count.Add(1) <= loginMaxAttempts
+}
+
 func (h *Handler) apiAuthLogin(w http.ResponseWriter, r *http.Request) {
+	// H1: per-IP rate limiting
+	ip := r.RemoteAddr
+	if i := strings.LastIndex(ip, ":"); i != -1 {
+		ip = ip[:i]
+	}
+	if !h.loginAllowed(ip) {
+		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Token string `json:"token"`
@@ -236,6 +304,11 @@ func (h *Handler) apiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if !tokenMatch {
 		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
+	}
+
+	// C3: invalidate any existing session for this browser before issuing a new one.
+	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+		h.sessions.Delete(c.Value)
 	}
 
 	sessionID, err := newSessionID()
@@ -267,17 +340,62 @@ func (h *Handler) apiAuthWSToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
-	h.wsTokens.Store(token, struct{}{})
+	h.wsTokens.Store(token, wsTokenEntry{createdAt: time.Now()})
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 // consumeWSToken checks and atomically removes a one-time WS token.
+// Returns false if the token is missing or has expired.
 func (h *Handler) consumeWSToken(token string) bool {
 	if token == "" {
 		return false
 	}
-	_, ok := h.wsTokens.LoadAndDelete(token)
-	return ok
+	v, ok := h.wsTokens.LoadAndDelete(token)
+	if !ok {
+		return false
+	}
+	e, ok := v.(wsTokenEntry)
+	return ok && time.Since(e.createdAt) <= wsTokenTTL
+}
+
+// instanceResponse is a safe subset of store.Instance for API responses.
+// EnvVars is deliberately omitted to avoid leaking API keys and secrets.
+type instanceResponse struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	ContainerID string  `json:"container_id"`
+	Status      string  `json:"status"`
+	ErrorMsg    string  `json:"error_msg"`
+	Port        int     `json:"port"`
+	WorkDir     string  `json:"work_dir"`
+	MemoryMB    int     `json:"memory_mb"`
+	CPUCores    float64 `json:"cpu_cores"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
+func toInstanceResponse(inst *store.Instance) instanceResponse {
+	return instanceResponse{
+		ID:          inst.ID,
+		Name:        inst.Name,
+		ContainerID: inst.ContainerID,
+		Status:      inst.Status,
+		ErrorMsg:    inst.ErrorMsg,
+		Port:        inst.Port,
+		WorkDir:     inst.WorkDir,
+		MemoryMB:    inst.MemoryMB,
+		CPUCores:    inst.CPUCores,
+		CreatedAt:   inst.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   inst.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func toInstanceResponses(instances []*store.Instance) []instanceResponse {
+	out := make([]instanceResponse, len(instances))
+	for i, inst := range instances {
+		out[i] = toInstanceResponse(inst)
+	}
+	return out
 }
 
 // --- Helpers ---
@@ -327,7 +445,7 @@ func (h *Handler) apiListInstances(w http.ResponseWriter, r *http.Request) {
 	if instances == nil {
 		instances = []*store.Instance{}
 	}
-	writeJSON(w, http.StatusOK, instances)
+	writeJSON(w, http.StatusOK, toInstanceResponses(instances))
 }
 
 func (h *Handler) apiGetInstance(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +461,7 @@ func (h *Handler) apiGetInstance(w http.ResponseWriter, r *http.Request) {
 			_ = h.store.Update(inst)
 		}
 	}
-	writeJSON(w, http.StatusOK, inst)
+	writeJSON(w, http.StatusOK, toInstanceResponse(inst))
 }
 
 func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -425,7 +543,7 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusCreated, inst)
+	writeJSON(w, http.StatusCreated, toInstanceResponse(inst))
 }
 
 func (h *Handler) apiDeleteInstance(w http.ResponseWriter, r *http.Request) {
@@ -498,7 +616,7 @@ func (h *Handler) apiStartInstance(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Warning: failed to register proxy for %s: %v", inst.ID, err)
 	}
 
-	writeJSON(w, http.StatusOK, inst)
+	writeJSON(w, http.StatusOK, toInstanceResponse(inst))
 }
 
 func (h *Handler) apiStopInstance(w http.ResponseWriter, r *http.Request) {
@@ -522,7 +640,7 @@ func (h *Handler) apiStopInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	h.proxy.Unregister(id)
 
-	writeJSON(w, http.StatusOK, inst)
+	writeJSON(w, http.StatusOK, toInstanceResponse(inst))
 }
 
 func (h *Handler) apiRestartInstance(w http.ResponseWriter, r *http.Request) {
@@ -568,7 +686,7 @@ func (h *Handler) apiRestartInstance(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Warning: failed to register proxy for %s: %v", inst.ID, err)
 	}
 
-	writeJSON(w, http.StatusOK, inst)
+	writeJSON(w, http.StatusOK, toInstanceResponse(inst))
 }
 
 func (h *Handler) apiInstanceStatus(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +710,7 @@ func (h *Handler) apiInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		writeNoContent(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, inst)
+	writeJSON(w, http.StatusOK, toInstanceResponse(inst))
 }
 
 // apiBatchInstanceStatus checks multiple instances at once and returns only
@@ -667,7 +785,8 @@ func (h *Handler) apiBatchInstanceStatus(w http.ResponseWriter, r *http.Request)
 		if res.inst == nil {
 			changed[res.id] = nil
 		} else {
-			changed[res.id] = res.inst
+			r := toInstanceResponse(res.inst)
+			changed[res.id] = r
 		}
 	}
 
@@ -702,21 +821,30 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		envVars = append(envVars, envVar{Key: k, Value: v})
 	}
 
-	// Config files with content
+	// Config files with content.
+	// H5: auth.json content is excluded from the default list response — it
+	// is only served by the dedicated GET /api/settings/file endpoint which
+	// requires an explicit user action.
 	type configFile struct {
-		Name    string `json:"name"`
-		RelPath string `json:"rel_path"`
-		Hint    string `json:"hint"`
-		Content string `json:"content"`
+		Name     string  `json:"name"`
+		RelPath  string  `json:"rel_path"`
+		Hint     string  `json:"hint"`
+		Content  *string `json:"content"` // nil means "load on demand"
+		ReadOnly bool    `json:"read_only,omitempty"`
 	}
+	const authRelPath = "opencode-data/auth.json"
 	var configFiles []configFile
 	for _, f := range h.config.EditableFiles() {
-		content, _ := h.config.ReadFile(f.RelPath)
+		var contentPtr *string
+		if filepath.ToSlash(f.RelPath) != authRelPath {
+			c, _ := h.config.ReadFile(f.RelPath)
+			contentPtr = &c
+		}
 		configFiles = append(configFiles, configFile{
 			Name:    f.Name,
 			RelPath: f.RelPath,
 			Hint:    f.Hint,
-			Content: content,
+			Content: contentPtr,
 		})
 	}
 
@@ -837,10 +965,21 @@ func (h *Handler) apiSaveConfigFile(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
+var validDirNames = map[string]bool{
+	"commands": true,
+	"agents":   true,
+	"skills":   true,
+	"plugins":  true,
+}
+
 func (h *Handler) apiListDirFiles(w http.ResponseWriter, r *http.Request) {
 	dirName := r.URL.Query().Get("dir")
 	if dirName == "" {
 		writeError(w, http.StatusBadRequest, "dir is required")
+		return
+	}
+	if !validDirNames[dirName] {
+		writeError(w, http.StatusBadRequest, "invalid dir: must be one of commands, agents, skills, plugins")
 		return
 	}
 	files, err := h.config.ListDirFiles(dirName)
@@ -872,6 +1011,10 @@ func (h *Handler) apiSaveDirFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Dir == "" || req.Filename == "" {
 		writeError(w, http.StatusBadRequest, "dir and filename are required")
+		return
+	}
+	if !validDirNames[req.Dir] {
+		writeError(w, http.StatusBadRequest, "invalid dir: must be one of commands, agents, skills, plugins")
 		return
 	}
 	relPath := filepath.Join(config.DirOpenCodeConfig, req.Dir, req.Filename)
@@ -963,10 +1106,13 @@ func (h *Handler) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := h.docker.ContainerLogsStream(ctx, inst.ContainerID, "200")
 	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to stream logs: "+err.Error()))
+		log.Printf("ContainerLogsStream error for %s: %v", inst.ID, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to stream logs"))
 		return
 	}
 	defer reader.Close()
+
+	conn.SetReadLimit(512) // clients send nothing on the log stream
 
 	go func() {
 		for {
@@ -1024,13 +1170,15 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	execID, err := h.docker.ExecCreate(ctx, inst.ContainerID, []string{"/bin/bash", "-l"})
 	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to create exec: "+err.Error()))
+		log.Printf("ExecCreate error for %s: %v", inst.ID, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to create terminal session"))
 		return
 	}
 
 	hijacked, err := h.docker.ExecAttach(ctx, execID)
 	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to attach exec: "+err.Error()))
+		log.Printf("ExecAttach error for %s: %v", inst.ID, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to attach terminal session"))
 		return
 	}
 	defer hijacked.Close()
@@ -1074,6 +1222,17 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 			if msgType == websocket.TextMessage && len(msg) > 0 && msg[0] == '{' {
 				var rm resizeMsg
 				if json.Unmarshal(msg, &rm) == nil && rm.Type == "resize" {
+					// Clamp dimensions to a sane range before forwarding to Docker.
+					if rm.Cols < 1 {
+						rm.Cols = 1
+					} else if rm.Cols > 500 {
+						rm.Cols = 500
+					}
+					if rm.Rows < 1 {
+						rm.Rows = 1
+					} else if rm.Rows > 500 {
+						rm.Rows = 500
+					}
 					_ = h.docker.ExecResize(ctx, execID, rm.Rows, rm.Cols)
 					continue
 				}
@@ -1105,6 +1264,15 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	h.proxy.ServeHTTP(w, r, id)
 }
 
+// spaSecurityHeaders sets defensive security headers on all SPA HTML responses.
+func spaSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self' data:")
+}
+
 func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
 	// If it's an API path that wasn't matched, return 404 JSON
 	if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -1113,8 +1281,7 @@ func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// /instance/{id} without trailing slash — redirect to /instance/{id}/ so it
-	// hits the registered handleProxy route. This happens when a reverse proxy or
-	// browser strips the trailing slash before forwarding.
+	// hits the registered handleProxy route.
 	if strings.HasPrefix(r.URL.Path, "/instance/") && !strings.HasSuffix(r.URL.Path, "/") {
 		http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 		return
@@ -1122,31 +1289,36 @@ func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
 
 	// /login is always public — serve the SPA so it can render the login page.
 	isLoginPage := r.URL.Path == "/login" || r.URL.Path == "/login/"
+
+	// H2: check auth before proxying catch-all instance assets.
 	if !isLoginPage && !h.isAuthenticated(r) {
-		// Check if this is a proxied asset request needing auth
 		if instanceID := h.resolveInstanceID(r); instanceID != "" {
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		// Browser navigation to any protected SPA route → redirect to /login
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
 
-	// Check if this is a proxied asset request (Referer or cookie based)
-	instanceID := h.resolveInstanceID(r)
-	if instanceID != "" {
-		h.proxy.ServeHTTPDirect(w, r, instanceID)
-		return
+	// Proxied asset request (Referer or cookie based) — only for authenticated users.
+	if h.isAuthenticated(r) {
+		if instanceID := h.resolveInstanceID(r); instanceID != "" {
+			h.proxy.ServeHTTPDirect(w, r, instanceID)
+			return
+		}
 	}
 
-	// #23: serve frontend SPA index.html without redirects
-	spaPath := filepath.Join("frontend", "dist", "index.html")
-	data, err := os.ReadFile(spaPath)
+	// Serve the embedded SPA for all other paths.
+	if h.spaFS == nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	data, err := fs.ReadFile(h.spaFS, "index.html")
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
+	spaSecurityHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(data)
 }

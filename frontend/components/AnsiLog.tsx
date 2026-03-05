@@ -1,13 +1,13 @@
 "use client";
 
-// #27/#28: AnsiLog renders log output safely without dangerouslySetInnerHTML.
-// Each component instance owns its AnsiToHtml converter (via useRef) so stream
-// state (split escape sequences) is never shared between multiple log panels.
-// Output is appended as text nodes and <span> elements via DOM APIs instead of
-// innerHTML, so no unsanitized HTML can be injected.
+// AnsiLog renders ANSI-escaped log output from a WebSocket stream.
+// ansi-to-html converts ANSI escape codes to <span style="color:..."> markup.
+// DOMPurify sanitizes the resulting HTML before it is written to the DOM,
+// preventing XSS from crafted ANSI sequences or library output.
 
 import { useEffect, useRef, useState } from "react";
 import AnsiToHtml from "ansi-to-html";
+import DOMPurify from "dompurify";
 import { buildWsUrl } from "@/lib/api";
 
 interface Props {
@@ -64,10 +64,13 @@ export default function AnsiLog({ wsUrl, className }: Props) {
         ? new TextDecoder().decode(e.data)
         : (e.data as string);
 
-      // Convert ANSI → HTML string (escapeXML:true ensures entity escaping)
-      const html = converterRef.current!.toHtml(chunk);
+      // Convert ANSI → HTML string, then sanitize before injecting into DOM.
+      const raw = converterRef.current!.toHtml(chunk);
+      const html = DOMPurify.sanitize(raw, {
+        ALLOWED_TAGS: ["span"],
+        ALLOWED_ATTR: ["style"],
+      });
 
-      // Parse the converted HTML and append nodes safely (#27)
       const temp = document.createElement("div");
       temp.innerHTML = html;
       while (temp.firstChild) {

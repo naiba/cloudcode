@@ -283,13 +283,15 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
 })();
 `
 
+	const maxHTMLSize = 10 << 20 // 10 MB
+
 	return func(resp *http.Response) error {
 		ct := resp.Header.Get("Content-Type")
 		if !strings.Contains(ct, "text/html") {
 			return nil
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLSize))
 		resp.Body.Close()
 		if err != nil {
 			return err

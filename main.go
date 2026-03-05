@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"flag"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -17,7 +19,8 @@ import (
 	"github.com/naiba/cloudcode/internal/store"
 )
 
-var version = "dev"
+//go:embed frontend/dist
+var embeddedSPA embed.FS
 
 func main() {
 	var (
@@ -27,15 +30,13 @@ func main() {
 		noDocker        = flag.Bool("no-docker", false, "Skip Docker initialization (for UI preview)")
 		corsOrigin      = flag.String("cors-origin", "", "Allowed CORS origin for dev (e.g. http://localhost:3000)")
 		accessToken     = flag.String("access-token", "", "Required bearer token / password for accessing the platform")
-		proxyCORSOrigin = flag.String("proxy-cors-origin", "*", "CORS Access-Control-Allow-Origin injected into proxied instance responses")
+		proxyCORSOrigin = flag.String("proxy-cors-origin", "", "CORS Access-Control-Allow-Origin injected into proxied instance responses (empty = disabled)")
 	)
 	flag.Parse()
 
 	if *accessToken == "" {
 		log.Fatal("--access-token is required. Set a strong secret token to protect the platform.")
 	}
-
-	_ = version
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting CloudCode Management Platform...")
@@ -70,8 +71,13 @@ func main() {
 		log.Println("Docker disabled (--no-docker), container operations will fail")
 	}
 
+	spaFiles, err := fs.Sub(embeddedSPA, "frontend/dist")
+	if err != nil {
+		log.Fatalf("Failed to sub embedded SPA: %v", err)
+	}
+
 	rp := proxy.New(*proxyCORSOrigin)
-	h := handler.New(db, dm, rp, cfgMgr, *accessToken, *corsOrigin)
+	h := handler.New(db, dm, rp, cfgMgr, spaFiles, *accessToken, *corsOrigin)
 
 	mux := http.NewServeMux()
 
@@ -87,8 +93,10 @@ func main() {
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           rootHandler,
-		ReadHeaderTimeout: 10 * time.Second, // #22: prevent Slowloris attacks
-		IdleTimeout:       120 * time.Second, // #22: reclaim idle connections
+		ReadHeaderTimeout: 10 * time.Second,  // prevent Slowloris header attacks
+		ReadTimeout:       30 * time.Second,  // limit slow-body attacks
+		WriteTimeout:      120 * time.Second, // generous for streaming (logs/terminal WS handshake)
+		IdleTimeout:       120 * time.Second, // reclaim idle connections
 	}
 
 	go func() {

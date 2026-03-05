@@ -47,10 +47,12 @@ var DotOpenCodeFiles = []string{
 
 // Pre-compiled regexes for JSONC comment stripping.
 var (
-	reStripSingleLine    = regexp.MustCompile(`(?m)^(\s*)//.*$`)
-	reStripInlineAfter   = regexp.MustCompile(`("[^"]*"|[^/])//.*$`)
 	reStripBlock         = regexp.MustCompile(`(?s)/\*.*?\*/`)
 	reStripTrailingComma = regexp.MustCompile(`,\s*([}\]])`)
+	// reTokenize splits JSONC into string literals and non-string segments so we
+	// can strip comments only from non-string parts (handles URLs like
+	// "https://example.com" without corrupting them).
+	reTokenize = regexp.MustCompile(`("(?:[^"\\]|\\.)*")|(//.*)`)
 )
 
 type ContainerMount struct {
@@ -176,12 +178,20 @@ func (m *Manager) ensureInstruction(filename string) error {
 	return os.WriteFile(configPath, out, 0640)
 }
 
-// stripJSONCComments removes // and /* */ comments from JSONC content.
-// Uses pre-compiled package-level regexes (#12).
+// stripJSONCComments removes // line comments and /* */ block comments from
+// JSONC content. String literals are preserved intact (handles URLs like
+// "https://example.com" without stripping the // inside them).
 func stripJSONCComments(s string) string {
-	s = reStripSingleLine.ReplaceAllString(s, "$1")
-	s = reStripInlineAfter.ReplaceAllString(s, "$1")
+	// First strip block comments (not string-aware, but block comments rarely
+	// appear inside string values in practice).
 	s = reStripBlock.ReplaceAllString(s, "")
+	// Replace each token: keep string literals, drop // comments.
+	s = reTokenize.ReplaceAllStringFunc(s, func(match string) string {
+		if strings.HasPrefix(match, `"`) {
+			return match // string literal — preserve as-is
+		}
+		return "" // // comment — remove
+	})
 	s = reStripTrailingComma.ReplaceAllString(s, "$1")
 	return s
 }
@@ -301,7 +311,18 @@ type DirFileInfo struct {
 	RelPath string
 }
 
+// validDirNames is the set of directory names that clients are allowed to list.
+var validDirNames = map[string]bool{
+	"commands": true,
+	"agents":   true,
+	"skills":   true,
+	"plugins":  true,
+}
+
 func (m *Manager) ListDirFiles(dirName string) ([]DirFileInfo, error) {
+	if !validDirNames[dirName] {
+		return nil, fmt.Errorf("invalid directory name: %q", dirName)
+	}
 	dirPath := filepath.Join(m.rootDir, DirOpenCodeConfig, dirName)
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
