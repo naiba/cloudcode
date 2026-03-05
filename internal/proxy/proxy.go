@@ -134,6 +134,7 @@ func (rp *ReverseProxy) Unregister(instanceID string) {
 //  1. Cookie _cc_inst_token_{id} (browser, set on first authenticated visit)
 //  2. ?token= query parameter (browser first visit / redirect)
 //  3. Authorization: Bearer <token> header (SDK / programmatic clients)
+//  4. Authorization: Basic <base64(user:token)> — used by `opencode attach --password`
 //
 // Returns the token value if it matches, empty string otherwise.
 func (rp *ReverseProxy) ValidateToken(r *http.Request, instanceID string) bool {
@@ -168,6 +169,13 @@ func (rp *ReverseProxy) ValidateToken(r *http.Request, instanceID string) bool {
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		t := strings.TrimPrefix(auth, "Bearer ")
 		if subtle.ConstantTimeCompare([]byte(t), []byte(expected)) == 1 {
+			return true
+		}
+	}
+
+	// 4. Authorization: Basic <base64(user:token)> — used by `opencode attach --password`
+	if _, password, ok := r.BasicAuth(); ok && password != "" {
+		if subtle.ConstantTimeCompare([]byte(password), []byte(expected)) == 1 {
 			return true
 		}
 	}
