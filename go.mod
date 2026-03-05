@@ -1,4 +1,4 @@
-module github.com/naiba/cloudcode
+module github.com/vkenliu/cloudcode-docker
 
 go 1.25.2
 

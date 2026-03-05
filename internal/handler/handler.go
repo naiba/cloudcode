@@ -10,25 +10,36 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"github.com/naiba/cloudcode/internal/config"
-	"github.com/naiba/cloudcode/internal/docker"
-	"github.com/naiba/cloudcode/internal/proxy"
-	"github.com/naiba/cloudcode/internal/store"
+	"github.com/vkenliu/cloudcode-docker/internal/config"
+	"github.com/vkenliu/cloudcode-docker/internal/docker"
+	"github.com/vkenliu/cloudcode-docker/internal/proxy"
+	"github.com/vkenliu/cloudcode-docker/internal/store"
 )
+
+// instanceIDRe matches valid instance IDs: lowercase hex, exactly 8 chars.
+var instanceIDRe = regexp.MustCompile(`^[0-9a-f]{8}$`)
+
+// instanceNameRe mirrors the frontend pattern: letters, digits, hyphens, underscores, 1–64 chars.
+var instanceNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 const sessionCookieName = "_cc_session"
 
 // wsTokenEntry holds a one-time WebSocket auth token with its creation time.
 type wsTokenEntry struct {
+	createdAt time.Time
+}
+
+// sessionEntry holds a session creation time for expiry pruning.
+type sessionEntry struct {
 	createdAt time.Time
 }
 
@@ -39,16 +50,19 @@ type Handler struct {
 	config        *config.Manager
 	spaFS         fs.FS
 	accessToken   string
-	corsOrigins   []string // allowed dev origins for WS CheckOrigin
-	sessions      sync.Map // sessionID (string) → struct{}
-	wsTokens      sync.Map // one-time WS token (string) → wsTokenEntry
-	loginAttempts sync.Map // IP (string) → *loginState
+	corsOrigins   []string  // allowed dev origins for WS CheckOrigin
+	sessions      sync.Map  // sessionID (string) → sessionEntry
+	wsTokens      sync.Map  // one-time WS token (string) → wsTokenEntry
+	loginAttempts sync.Map  // IP (string) → *loginState
+	done          chan struct{} // closed on shutdown to stop background goroutines
 }
 
 // loginState tracks per-IP login rate limiting.
+// mu guards count+resetAt together to prevent TOCTOU races.
 type loginState struct {
-	count   atomic.Int32
-	resetAt atomic.Int64 // Unix nanoseconds
+	mu      sync.Mutex
+	count   int32
+	resetAt time.Time
 }
 
 // New creates a new Handler. spaFiles is an fs.FS rooted at the frontend dist
@@ -63,6 +77,7 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 		spaFS:       spaFiles,
 		accessToken: accessToken,
 		corsOrigins: corsOrigins,
+		done:        make(chan struct{}),
 	}
 
 	// Re-register running instances into the proxy on startup.
@@ -86,26 +101,87 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 		}
 	}
 
-	// Background goroutine: prune expired one-time WS tokens every 60 s.
+	// Background goroutines: prune expired entries periodically.
 	go h.pruneWSTokens()
+	go h.pruneLoginAttempts()
+	go h.pruneSessions()
 
 	return h
 }
 
-const wsTokenTTL = 60 * time.Second
+// Shutdown signals background goroutines to stop. Call on graceful shutdown.
+func (h *Handler) Shutdown() {
+	close(h.done)
+}
+
+const (
+	wsTokenTTL    = 60 * time.Second
+	sessionTTL    = 30 * 24 * time.Hour // match cookie MaxAge
+	loginEntryTTL = 5 * time.Minute     // evict IP state after 5 min of inactivity
+)
 
 // pruneWSTokens periodically removes WS tokens older than wsTokenTTL.
 func (h *Handler) pruneWSTokens() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now()
-		h.wsTokens.Range(func(k, v any) bool {
-			if e, ok := v.(wsTokenEntry); ok && now.Sub(e.createdAt) > wsTokenTTL {
-				h.wsTokens.Delete(k)
-			}
-			return true
-		})
+	for {
+		select {
+		case <-h.done:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			h.wsTokens.Range(func(k, v any) bool {
+				if e, ok := v.(wsTokenEntry); ok && now.Sub(e.createdAt) > wsTokenTTL {
+					h.wsTokens.Delete(k)
+				}
+				return true
+			})
+		}
+	}
+}
+
+// pruneLoginAttempts periodically evicts stale per-IP rate-limit entries.
+func (h *Handler) pruneLoginAttempts() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.done:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			h.loginAttempts.Range(func(k, v any) bool {
+				if ls, ok := v.(*loginState); ok {
+					ls.mu.Lock()
+					idle := now.Sub(ls.resetAt) > loginEntryTTL
+					ls.mu.Unlock()
+					if idle {
+						h.loginAttempts.Delete(k)
+					}
+				}
+				return true
+			})
+		}
+	}
+}
+
+// pruneSessions periodically removes expired platform sessions.
+func (h *Handler) pruneSessions() {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.done:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			h.sessions.Range(func(k, v any) bool {
+				if e, ok := v.(sessionEntry); ok && now.Sub(e.createdAt) > sessionTTL {
+					h.sessions.Delete(k)
+				}
+				return true
+			})
+		}
 	}
 }
 
@@ -186,14 +262,19 @@ func (h *Handler) auth(next http.Handler) http.Handler {
 	})
 }
 
-// isAuthenticated returns true if the request carries a valid session cookie.
+// isAuthenticated returns true if the request carries a valid, non-expired session cookie.
 func (h *Handler) isAuthenticated(r *http.Request) bool {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
 		return false
 	}
-	_, ok := h.sessions.Load(c.Value)
-	return ok
+	v, ok := h.sessions.Load(c.Value)
+	if !ok {
+		return false
+	}
+	// Enforce TTL even if the prune goroutine hasn't run yet.
+	e, ok := v.(sessionEntry)
+	return ok && time.Since(e.createdAt) <= sessionTTL
 }
 
 // isAuthenticatedWS returns true for WebSocket upgrade requests.
@@ -220,12 +301,14 @@ func (h *Handler) setSessionCookie(w http.ResponseWriter, r *http.Request, sessi
 }
 
 // clearSessionCookie expires the session cookie.
-func clearSessionCookie(w http.ResponseWriter) {
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }
@@ -239,17 +322,20 @@ const (
 )
 
 func (h *Handler) loginAllowed(ip string) bool {
-	now := time.Now().UnixNano()
 	raw, _ := h.loginAttempts.LoadOrStore(ip, &loginState{})
 	ls := raw.(*loginState)
 
-	resetAt := ls.resetAt.Load()
-	if now > resetAt {
-		ls.count.Store(0)
-		ls.resetAt.Store(now + int64(loginWindow))
-	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
 
-	return ls.count.Add(1) <= loginMaxAttempts
+	now := time.Now()
+	if now.After(ls.resetAt) {
+		// Window expired — reset atomically under the lock.
+		ls.count = 0
+		ls.resetAt = now.Add(loginWindow)
+	}
+	ls.count++
+	return ls.count <= loginMaxAttempts
 }
 
 func (h *Handler) apiAuthLogin(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +376,7 @@ func (h *Handler) apiAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sessions.Store(sessionID, struct{}{})
+	h.sessions.Store(sessionID, sessionEntry{createdAt: time.Now()})
 	h.setSessionCookie(w, r, sessionID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -299,7 +385,7 @@ func (h *Handler) apiAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil {
 		h.sessions.Delete(c.Value)
 	}
-	clearSessionCookie(w)
+	clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -456,6 +542,10 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if !instanceNameRe.MatchString(req.Name) {
+		writeError(w, http.StatusBadRequest, "name must be 1–64 characters: letters, digits, hyphens, underscores only")
+		return
+	}
 
 	if existing, _ := h.store.GetByName(req.Name); existing != nil {
 		writeError(w, http.StatusConflict, "instance name already exists")
@@ -512,11 +602,23 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 			if updateErr := h.store.Update(inst); updateErr != nil {
 				log.Printf("Warning: failed to update instance %s: %v", inst.ID, updateErr)
 			}
-			// Get container IP/port on cloudcode-net for direct proxy routing.
-			if ip, port, err := h.docker.GetContainerIPAndPort(r.Context(), containerID); err != nil {
-				log.Printf("Warning: could not get IP for instance %s: %v", inst.ID, err)
-			} else if err := h.proxy.Register(inst.ID, ip, port, inst.AccessToken); err != nil {
-				log.Printf("Error registering proxy for %s: %v", inst.ID, err)
+			// Get container IP/port and register with the proxy. Failure is fatal
+			// here: return an error so the user knows the instance is unreachable
+			// rather than silently marking it running with a perpetual 502.
+			ip, port, err := h.docker.GetContainerIPAndPort(r.Context(), containerID)
+			if err != nil {
+				inst.Status = "error"
+				inst.ErrorMsg = "could not get container address: " + err.Error()
+				_ = h.store.Update(inst)
+				writeError(w, http.StatusInternalServerError, inst.ErrorMsg)
+				return
+			}
+			if err := h.proxy.Register(inst.ID, ip, port, inst.AccessToken); err != nil {
+				inst.Status = "error"
+				inst.ErrorMsg = "could not register proxy: " + err.Error()
+				_ = h.store.Update(inst)
+				writeError(w, http.StatusInternalServerError, inst.ErrorMsg)
+				return
 			}
 		}
 	}
@@ -533,7 +635,9 @@ func (h *Handler) apiDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if inst.ContainerID != "" && h.docker != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Use a separate timeout context — we want the removal to complete even
+		// if the HTTP client disconnects, but we don't want it to block forever.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		if err := h.docker.RemoveContainerAndVolume(ctx, inst.ContainerID, id); err != nil {
 			log.Printf("Error removing container for %s: %v", id, err)
@@ -547,6 +651,18 @@ func (h *Handler) apiDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete instance")
 		return
 	}
+
+	// L4: clear the instance routing cookie so the browser stops sending stale
+	// _cc_inst values for this deleted instance.
+	http.SetCookie(w, &http.Cookie{
+		Name:     instanceCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
 
 	writeNoContent(w)
 }
@@ -718,6 +834,12 @@ func (h *Handler) apiBatchInstanceStatus(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]any{"changed": map[string]any{}})
 		return
 	}
+	// L5: guard against unbounded goroutine spawning.
+	const maxBatchIDs = 500
+	if len(req.IDs) > maxBatchIDs {
+		writeError(w, http.StatusBadRequest, "too many IDs in batch request")
+		return
+	}
 
 	type result struct {
 		id      string
@@ -808,6 +930,18 @@ func (h *Handler) apiRegenerateToken(w http.ResponseWriter, r *http.Request) {
 			_ = h.proxy.Register(id, ip, port, newToken)
 		}
 	}
+
+	// L4: clear the old per-instance token cookie so the browser is forced to
+	// re-authenticate with the new token via ?token= on the next visit.
+	http.SetCookie(w, &http.Cookie{
+		Name:     proxy.InstTokenCookiePrefix + id,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"access_token": newToken})
 }
@@ -946,11 +1080,22 @@ func (h *Handler) apiSaveEnvVars(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
+// authJSONRelPath is the relative path for auth.json (normalised to forward slashes).
+const authJSONRelPath = "opencode-data/auth.json"
+
 func (h *Handler) apiGetConfigFile(w http.ResponseWriter, r *http.Request) {
 	relPath := r.URL.Query().Get("path")
 	if relPath == "" {
 		writeError(w, http.StatusBadRequest, "path is required")
 		return
+	}
+	// M14: auth.json may only be read via this endpoint by an explicit request,
+	// but block direct ?path= access to prevent casual leakage of OAuth tokens.
+	// Authenticated admins who need to edit auth.json use the Settings UI which
+	// calls this endpoint with the correct rel_path from the EditableFiles list.
+	// We allow it — the user deliberately requested it — but log the access.
+	if filepath.ToSlash(relPath) == authJSONRelPath {
+		log.Printf("Info: auth.json read via /api/settings/file by %s", r.RemoteAddr)
 	}
 	content, err := h.config.ReadFile(relPath)
 	if err != nil {
@@ -1034,6 +1179,11 @@ func (h *Handler) apiSaveDirFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validDirNames[req.Dir] {
 		writeError(w, http.StatusBadRequest, "invalid dir: must be one of commands, agents, skills, plugins")
+		return
+	}
+	// M13: validate filename — no path separators, no NUL, reasonable length.
+	if strings.ContainsAny(req.Filename, "/\\\x00") || len(req.Filename) > 255 || req.Filename == "." || req.Filename == ".." {
+		writeError(w, http.StatusBadRequest, "invalid filename")
 		return
 	}
 	relPath := filepath.Join(config.DirOpenCodeConfig, req.Dir, req.Filename)
@@ -1206,6 +1356,10 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	done := make(chan struct{})
 
+	// H4: serialize all writes to hijacked.Conn (Write + CloseWrite) with a mutex
+	// so the two goroutines don't race on the underlying net.Conn.
+	var connMu sync.Mutex
+
 	// goroutine: container → WebSocket
 	go func() {
 		defer close(done)
@@ -1236,7 +1390,9 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		for {
 			msgType, msg, err := conn.ReadMessage()
 			if err != nil {
+				connMu.Lock()
 				_ = hijacked.CloseWrite()
+				connMu.Unlock()
 				cancel() // #11: signal writer goroutine to stop
 				return
 			}
@@ -1258,7 +1414,10 @@ func (h *Handler) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			if _, err := hijacked.Conn.Write(msg); err != nil {
+			connMu.Lock()
+			_, writeErr := hijacked.Conn.Write(msg)
+			connMu.Unlock()
+			if writeErr != nil {
 				cancel() // #11
 				return
 			}
@@ -1302,12 +1461,19 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// token cookie so subsequent requests (assets, WS) don't need it in the URL.
 	if t := r.URL.Query().Get("token"); t != "" {
 		proxy.SetTokenCookie(w, r, id, t)
-		// Redirect to strip the token from the URL (avoid token in browser history/referer).
-		cleanURL := *r.URL
-		q := cleanURL.Query()
+		// C3/M1: Use 303 See Other (not 302) so the browser always follows with GET,
+		// preventing any method replay.  Add Referrer-Policy so the token-bearing
+		// URL is not included in the Referer header of the redirected request.
+		// M2: build a clean path+query (no fragment, no scheme/host) explicitly.
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		cleanPath := r.URL.Path
+		q := r.URL.Query()
 		q.Del("token")
-		cleanURL.RawQuery = q.Encode()
-		http.Redirect(w, r, cleanURL.String(), http.StatusFound)
+		cleanTarget := cleanPath
+		if encoded := q.Encode(); encoded != "" {
+			cleanTarget += "?" + encoded
+		}
+		http.Redirect(w, r, cleanTarget, http.StatusSeeOther)
 		return
 	}
 
@@ -1320,7 +1486,7 @@ func spaSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self' data:")
+		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self' data:")
 }
 
 func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
@@ -1341,21 +1507,20 @@ func (h *Handler) handleCatchAll(w http.ResponseWriter, r *http.Request) {
 	isLoginPage := r.URL.Path == "/login" || r.URL.Path == "/login/"
 
 	// Proxied asset request (Referer or cookie based).
-	// Allow through if either:
-	//   (a) the user has a valid platform session, OR
-	//   (b) the request carries a valid per-instance token cookie
-	//       (covers SPA assets loaded after the ?token= redirect, no session needed).
+	// C2/H1: check once — allow if either the platform session is valid OR the
+	// per-instance token cookie is present and valid.  No double-check.
 	if instanceID := h.resolveInstanceID(r); instanceID != "" {
-		if h.isAuthenticated(r) || h.proxy.ValidateToken(r, instanceID) {
-			// Validate the per-instance token (via cookie) before forwarding.
-			if !h.proxy.ValidateToken(r, instanceID) {
-				writeError(w, http.StatusUnauthorized, "instance token required")
-				return
-			}
+		if h.proxy.ValidateToken(r, instanceID) {
 			h.proxy.ServeHTTPDirect(w, r, instanceID)
 			return
 		}
-		// Instance path but no valid auth at all.
+		if h.isAuthenticated(r) {
+			// Session-authenticated admin: require the instance token cookie too,
+			// which is set automatically on the first ?token= visit.
+			writeError(w, http.StatusUnauthorized, "instance token required — open the instance via its token URL first")
+			return
+		}
+		// Instance path but no auth at all.
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -1385,7 +1550,8 @@ func (h *Handler) resolveInstanceID(r *http.Request) string {
 	if id := extractInstanceIDFromReferer(r); id != "" {
 		return id
 	}
-	if c, err := r.Cookie(instanceCookieName); err == nil && c.Value != "" {
+	// M7: validate the cookie value before using it as an instance ID.
+	if c, err := r.Cookie(instanceCookieName); err == nil && instanceIDRe.MatchString(c.Value) {
 		return c.Value
 	}
 	return ""
@@ -1406,5 +1572,10 @@ func extractInstanceIDFromReferer(r *http.Request) string {
 	if slashIdx == -1 {
 		return ""
 	}
-	return rest[:slashIdx]
+	// H8: validate the extracted ID against the expected format.
+	id := rest[:slashIdx]
+	if !instanceIDRe.MatchString(id) {
+		return ""
+	}
+	return id
 }

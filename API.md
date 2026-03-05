@@ -180,7 +180,7 @@ The token is enforced at two layers:
 1. The CloudCode proxy validates it before forwarding (cookie, `?token=` param, or `Authorization: Bearer`)
 2. OpenCode's own `OPENCODE_SERVER_PASSWORD` Basic Auth inside the container provides defense-in-depth
 
-Container ports are **not published** to the host — all traffic routes through the CloudCode proxy via the internal Docker network.
+Container ports are published to `127.0.0.1` on a random loopback-only host port (inaccessible from the network). All external traffic routes through the CloudCode proxy.
 
 **Status values:**
 - `created` — record exists, container not yet started
@@ -777,7 +777,7 @@ Used in dev when the frontend runs on a different port:
 ./bin/cloudcode --addr :8080 --access-token mytoken --cors-origin http://localhost:3000,http://localhost:4000
 ```
 
-> **Note:** `--proxy-cors-origin` has been removed. Container ports are no longer published to the host, so browsers never reach the OpenCode server directly — only the Go proxy does. The platform CORS middleware (`--cors-origin`) covers all browser-facing traffic.
+> **Note:** `--proxy-cors-origin` has been removed. Container ports are bound to `127.0.0.1` (loopback only), so browsers can never reach the OpenCode server directly — only the Go proxy does. The platform CORS middleware (`--cors-origin`) covers all browser-facing traffic.
 
 ---
 

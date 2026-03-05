@@ -46,8 +46,16 @@ export default function TerminalPage() {
       fitAddon.fit();
       termRef.current = term;
 
-      // Connect WebSocket (buildWsUrl fetches a one-time auth token for cross-origin WS)
-      const ws = new WebSocket(await buildWsUrl(`/instances/${id}/terminal/ws`));
+      // Connect WebSocket (buildWsUrl fetches a one-time auth token for cross-origin WS).
+      // M15: if the token fetch fails (session expired), redirect to /login.
+      let wsUrl: string;
+      try {
+        wsUrl = await buildWsUrl(`/instances/${id}/terminal/ws`);
+      } catch {
+        if (typeof window !== "undefined") window.location.href = "/login";
+        return;
+      }
+      const ws = new WebSocket(wsUrl);
       // Assign to ref immediately so the outer cleanup function can close it
       // even if unmount races with this async init completing.
       wsRef.current = ws;
@@ -104,9 +112,11 @@ export default function TerminalPage() {
 
     return () => {
       aborted = true; // #29: prevent post-unmount init
-      cleanup.then((fn) => fn && fn());
+      // L14: close socket and dispose terminal synchronously first, then
+      // resolve the async cleanup (window resize listener removal) when ready.
       wsRef.current?.close();
       termRef.current?.dispose();
+      cleanup.then((fn) => fn && fn());
     };
   }, [id]);
 

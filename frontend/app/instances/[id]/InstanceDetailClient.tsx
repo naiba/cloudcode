@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, instanceOpenUrl, Instance } from "@/lib/api";
@@ -26,6 +26,11 @@ function TokenField({ instanceId, token }: { instanceId: string; token: string }
   const [copied, setCopied] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [currentToken, setCurrentToken] = useState(token);
+
+  // L10: sync local state when parent updates the token (e.g. after status poll)
+  useEffect(() => {
+    setCurrentToken(token);
+  }, [token]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(currentToken).then(() => {

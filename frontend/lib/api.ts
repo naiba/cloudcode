@@ -105,7 +105,7 @@ export function wsBase(): string {
   if (typeof window !== "undefined") {
     return `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
   }
-  return "ws://localhost:8080";
+  return ""; // SSR context — WS is never actually used server-side
 }
 
 /**
@@ -130,13 +130,9 @@ export async function buildWsUrl(path: string): Promise<string> {
   }
 
   // Cross-origin: fetch a one-time token via the session-authenticated proxy.
-  try {
-    const { token } = await api.auth.wsToken();
-    return `${url}?token=${encodeURIComponent(token)}`;
-  } catch {
-    // Fall back to the plain URL; the server will return 401 if auth fails.
-    return url;
-  }
+  // M15: don't silently swallow errors — throw so callers can redirect to /login.
+  const { token } = await api.auth.wsToken();
+  return `${url}?token=${encodeURIComponent(token)}`;
 }
 
 class ApiResponseError extends Error {

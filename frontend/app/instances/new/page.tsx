@@ -26,6 +26,15 @@ export default function NewInstancePage() {
       setError("Name is required");
       return;
     }
+    // L9: guard against NaN from cleared number inputs (Number("") === NaN)
+    if (!Number.isFinite(memoryMb) || memoryMb < 0) {
+      setError("Memory must be a non-negative number (0 = unlimited)");
+      return;
+    }
+    if (!Number.isFinite(cpuCores) || cpuCores < 0) {
+      setError("CPU cores must be a non-negative number (0 = unlimited)");
+      return;
+    }
     setBusy(true);
     setError("");
     try {

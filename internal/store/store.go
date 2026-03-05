@@ -161,12 +161,16 @@ func (s *Store) Update(inst *Instance) error {
 
 	inst.UpdatedAt = time.Now()
 
-	_, err = s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE instances SET name=?, container_id=?, status=?, error_msg=?, port=?, work_dir=?, env_vars=?, memory_mb=?, cpu_cores=?, access_token=?, updated_at=?
 		WHERE id=?
 	`, inst.Name, inst.ContainerID, inst.Status, inst.ErrorMsg, inst.Port, inst.WorkDir, string(envJSON), inst.MemoryMB, inst.CPUCores, inst.AccessToken, inst.UpdatedAt, inst.ID)
 	if err != nil {
 		return fmt.Errorf("update instance: %w", err)
+	}
+	// M9: verify the row actually existed.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("update instance: no row found for id %s", inst.ID)
 	}
 	return nil
 }
@@ -182,16 +186,11 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// rowScanner is satisfied by both *sql.Row and *sql.Rows (#19).
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-// scanInstanceFrom scans a single row (from *sql.Row or *sql.Rows) into an Instance.
-func scanInstanceFrom(s rowScanner) (*Instance, error) {
+// scanRow is the shared scan logic for a single instance row.
+func scanRow(scan func(dest ...any) error) (*Instance, error) {
 	var inst Instance
 	var envJSON string
-	if err := s.Scan(&inst.ID, &inst.Name, &inst.ContainerID, &inst.Status, &inst.ErrorMsg, &inst.Port, &inst.WorkDir, &envJSON, &inst.MemoryMB, &inst.CPUCores, &inst.AccessToken, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+	if err := scan(&inst.ID, &inst.Name, &inst.ContainerID, &inst.Status, &inst.ErrorMsg, &inst.Port, &inst.WorkDir, &envJSON, &inst.MemoryMB, &inst.CPUCores, &inst.AccessToken, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(envJSON), &inst.EnvVars); err != nil {
@@ -202,10 +201,10 @@ func scanInstanceFrom(s rowScanner) (*Instance, error) {
 
 // scanInstance scans a single *sql.Row into an Instance.
 func scanInstance(row *sql.Row) (*Instance, error) {
-	return scanInstanceFrom(row)
+	return scanRow(row.Scan)
 }
 
 // scanInstanceRow scans from *sql.Rows.
 func scanInstanceRow(rows *sql.Rows) (*Instance, error) {
-	return scanInstanceFrom(rows)
+	return scanRow(rows.Scan)
 }

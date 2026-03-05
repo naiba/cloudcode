@@ -16,13 +16,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
-	// instTokenCookiePrefix is the per-instance token cookie name prefix.
+	// InstTokenCookiePrefix is the per-instance token cookie name prefix.
 	// Full cookie name: _cc_inst_token_{instanceID}
-	instTokenCookiePrefix = "_cc_inst_token_"
+	InstTokenCookiePrefix = "_cc_inst_token_"
 	// instTokenCookieMaxAge is how long the per-instance token cookie lives.
 	instTokenCookieMaxAge = 86400 * 30 // 30 days
 )
@@ -151,7 +150,7 @@ func (rp *ReverseProxy) ValidateToken(r *http.Request, instanceID string) bool {
 	}
 
 	// 1. Cookie
-	cookieName := instTokenCookiePrefix + instanceID
+	cookieName := InstTokenCookiePrefix + instanceID
 	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
 		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(expected)) == 1 {
 			return true
@@ -179,14 +178,13 @@ func (rp *ReverseProxy) ValidateToken(r *http.Request, instanceID string) bool {
 // SetTokenCookie writes the per-instance token cookie to the response.
 func SetTokenCookie(w http.ResponseWriter, r *http.Request, instanceID, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     instTokenCookiePrefix + instanceID,
+		Name:     InstTokenCookiePrefix + instanceID,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   instTokenCookieMaxAge,
-		Expires:  time.Now().Add(instTokenCookieMaxAge * time.Second),
+		MaxAge: instTokenCookieMaxAge,
 	})
 }
 
@@ -333,8 +331,10 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
 			return err
 		}
 
-		headTag := []byte("<head>")
-		idx := bytes.Index(bytes.ToLower(body), headTag)
+		// M3: find <head> case-insensitively without ToLower on the full body
+		// (ToLower on non-ASCII UTF-8 can change byte lengths, corrupting the index).
+		// Instead, search for all four case variants that matter in HTML.
+		idx := indexCaseASCII(body, "<head>")
 		if idx == -1 {
 			resp.Body = io.NopCloser(bytes.NewReader(body))
 			return nil
@@ -344,11 +344,16 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
 		injection := []byte(`<script nonce="` + nonce + `">` + scriptBody + `</script>`)
 
 		if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
-			csp = strings.Replace(csp, "script-src ", "script-src 'nonce-"+nonce+"' ", 1)
+			// M4: inject nonce into script-src if present, otherwise into default-src.
+			if strings.Contains(csp, "script-src ") {
+				csp = strings.Replace(csp, "script-src ", "script-src 'nonce-"+nonce+"' ", 1)
+			} else if strings.Contains(csp, "default-src ") {
+				csp = strings.Replace(csp, "default-src ", "default-src 'nonce-"+nonce+"' ", 1)
+			}
 			resp.Header.Set("Content-Security-Policy", csp)
 		}
 
-		insertAt := idx + len(headTag)
+		insertAt := idx + len("<head>")
 		modified := make([]byte, 0, len(body)+len(injection))
 		modified = append(modified, body[:insertAt]...)
 		modified = append(modified, injection...)
@@ -359,6 +364,34 @@ func injectInstanceIsolation(instanceID string) func(*http.Response) error {
 		resp.Header.Set("Content-Length", strconv.Itoa(len(modified)))
 		return nil
 	}
+}
+
+// indexCaseASCII finds the first occurrence of the ASCII tag (lowercase) in body,
+// matching case-insensitively for ASCII letters only.  This avoids bytes.ToLower
+// which can change byte lengths for non-ASCII UTF-8 content, corrupting the index.
+func indexCaseASCII(body []byte, tag string) int {
+	if len(tag) == 0 || len(body) < len(tag) {
+		return -1
+	}
+	tagBytes := []byte(tag) // already lowercase
+	for i := 0; i <= len(body)-len(tagBytes); i++ {
+		match := true
+		for j, tb := range tagBytes {
+			cb := body[i+j]
+			// ASCII lowercase
+			if cb >= 'A' && cb <= 'Z' {
+				cb += 'a' - 'A'
+			}
+			if cb != tb {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 const waitingPageHTML = `<!DOCTYPE html>

@@ -17,8 +17,8 @@ import (
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
-	"github.com/naiba/cloudcode/internal/config"
-	"github.com/naiba/cloudcode/internal/store"
+	"github.com/vkenliu/cloudcode-docker/internal/config"
+	"github.com/vkenliu/cloudcode-docker/internal/store"
 )
 
 const (
@@ -113,7 +113,6 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	containerName := containerPrefix + inst.ID
 
@@ -203,15 +202,20 @@ func (m *Manager) CreateContainer(ctx context.Context, inst *store.Instance) (st
 		},
 	})
 	if err != nil {
+		m.mu.Unlock()
 		return "", fmt.Errorf("create container: %w", err)
 	}
+	containerID := resp.ID
+	// M5: release the mutex before the slow ContainerStart call so other
+	// operations (status checks, etc.) are not blocked during startup.
+	m.mu.Unlock()
 
-	if _, err := m.cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
-		_, _ = m.cli.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{Force: true})
+	if _, err := m.cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
+		_, _ = m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
 		return "", fmt.Errorf("start container: %w", err)
 	}
 
-	return resp.ID, nil
+	return containerID, nil
 }
 
 // GetContainerIPAndPort returns the host/IP and port to use for proxying to the container.
@@ -228,10 +232,10 @@ func (m *Manager) GetContainerIPAndPort(ctx context.Context, containerID string)
 		return "", 0, fmt.Errorf("inspect container: %w", err)
 	}
 
-	// Legacy containers: if any host port binding exists, use 127.0.0.1 + host port.
-	// Old opencode binds to 127.0.0.1 inside the container; the Docker bridge IP
-	// is unreachable for those processes.
-	for _, bindings := range result.Container.NetworkSettings.Ports {
+	// M6: look specifically for the binding on containerPort/tcp rather than
+	// returning the first arbitrary binding (map iteration is non-deterministic).
+	targetPort := network.MustParsePort(fmt.Sprintf("%d/tcp", containerPort))
+	if bindings, ok := result.Container.NetworkSettings.Ports[targetPort]; ok {
 		for _, b := range bindings {
 			if b.HostPort != "" {
 				var hp int
@@ -299,16 +303,22 @@ func (m *Manager) RemoveContainer(ctx context.Context, containerID string) error
 
 // RemoveContainerAndVolume removes the container and its named home volume.
 // Used when permanently deleting an instance.
+// L13: always attempts volume removal even if the container is already gone.
 func (m *Manager) RemoveContainerAndVolume(ctx context.Context, containerID, instanceID string) error {
-	_, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
+	_, containerErr := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
 		Force: true,
 	})
-	if err != nil {
-		return err
+	if containerErr != nil && !strings.Contains(containerErr.Error(), "No such container") {
+		// Real error — log but still proceed to volume removal.
+		log.Printf("Warning: remove container %s: %v", containerID, containerErr)
 	}
-	// Best-effort removal of the named volume
+	// Always attempt volume removal regardless of container removal outcome.
 	volName := volumePrefix + instanceID
 	_, _ = m.cli.VolumeRemove(ctx, volName, client.VolumeRemoveOptions{Force: true})
+	// Return container error only if it was a real failure (not "not found").
+	if containerErr != nil && !strings.Contains(containerErr.Error(), "No such container") {
+		return containerErr
+	}
 	return nil
 }
 

@@ -134,6 +134,10 @@ func (m *Manager) ensureInstructionsFile() error {
 	return m.ensureInstruction("/root/.config/opencode/" + instructionsFileName)
 }
 
+// instrEntryRe matches an existing "instructions" array opening in JSONC,
+// used to inject a new entry without destroying comments or formatting.
+var instrEntryRe = regexp.MustCompile(`(?m)"instructions"\s*:\s*\[`)
+
 func (m *Manager) ensureInstruction(filename string) error {
 	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
 	raw, err := os.ReadFile(configPath)
@@ -143,39 +147,43 @@ func (m *Manager) ensureInstruction(filename string) error {
 
 	content := string(raw)
 
-	// Build per-call regex for this specific filename (#12: the filename varies)
+	// Build per-call regex for this specific filename.
 	refRe := regexp.MustCompile(`["']` + regexp.QuoteMeta(filename) + `["']`)
 	if refRe.MatchString(content) {
-		return nil
+		return nil // already present — nothing to do
 	}
 
-	stripped := stripJSONCComments(content)
+	// M11/M12: instead of round-tripping through JSON (which destroys all
+	// JSONC comments and formatting), we surgically inject the filename into
+	// the raw JSONC content.
+	entryJSON, _ := json.Marshal(filename) // produces `"<filename>"`
 
-	var cfg map[string]any
-	if len(stripped) > 0 {
-		if err := json.Unmarshal([]byte(stripped), &cfg); err != nil {
-			// #25: log a warning instead of silently skipping
+	if loc := instrEntryRe.FindStringIndex(content); loc != nil {
+		// Inject as the first element of the existing "instructions" array.
+		insertAt := loc[1] // right after the '['
+		content = content[:insertAt] + "\n    " + string(entryJSON) + "," + content[insertAt:]
+	} else if strings.TrimSpace(content) == "" {
+		// Empty file — create a minimal JSONC config.
+		content = "{\n  \"instructions\": [\n    " + string(entryJSON) + "\n  ]\n}\n"
+	} else {
+		// Non-empty file but no "instructions" key — validate it parses, then
+		// inject the key before the closing '}'.
+		stripped := stripJSONCComments(content)
+		if err := json.Unmarshal([]byte(stripped), &map[string]any{}); err != nil {
 			log.Printf("Warning: opencode.jsonc is malformed, skipping instruction injection: %v", err)
 			return nil
 		}
-	} else {
-		cfg = make(map[string]any)
-	}
-
-	var instructions []any
-	if existing, ok := cfg["instructions"]; ok {
-		if arr, ok := existing.([]any); ok {
-			instructions = arr
+		// Find the last '}' and inject before it.
+		lastBrace := strings.LastIndex(content, "}")
+		if lastBrace == -1 {
+			log.Printf("Warning: opencode.jsonc has no closing brace, skipping instruction injection")
+			return nil
 		}
+		injection := ",\n  \"instructions\": [\n    " + string(entryJSON) + "\n  ]\n"
+		content = content[:lastBrace] + injection + content[lastBrace:]
 	}
-	instructions = append(instructions, filename)
-	cfg["instructions"] = instructions
 
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal opencode.jsonc: %w", err)
-	}
-	return os.WriteFile(configPath, out, 0640)
+	return os.WriteFile(configPath, []byte(content), 0640)
 }
 
 // stripJSONCComments removes // line comments and /* */ block comments from
