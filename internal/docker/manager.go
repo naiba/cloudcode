@@ -17,8 +17,8 @@ import (
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
-	"github.com/naiba/cloudcode/internal/config"
-	"github.com/naiba/cloudcode/internal/store"
+	"github.com/vkenliu/cloudcode-docker/internal/config"
+	"github.com/vkenliu/cloudcode-docker/internal/store"
 )
 
 const (

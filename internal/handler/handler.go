@@ -19,10 +19,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"github.com/naiba/cloudcode/internal/config"
-	"github.com/naiba/cloudcode/internal/docker"
-	"github.com/naiba/cloudcode/internal/proxy"
-	"github.com/naiba/cloudcode/internal/store"
+	"github.com/vkenliu/cloudcode-docker/internal/config"
+	"github.com/vkenliu/cloudcode-docker/internal/docker"
+	"github.com/vkenliu/cloudcode-docker/internal/proxy"
+	"github.com/vkenliu/cloudcode-docker/internal/store"
 )
 
 // instanceIDRe matches valid instance IDs: lowercase hex, exactly 8 chars.

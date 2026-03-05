@@ -26,7 +26,7 @@ A self-hosted management platform for [OpenCode](https://opencode.ai) instances.
 mkdir cloudcode && cd cloudcode
 # Create the shared Docker network (required, one-time setup)
 docker network create cloudcode-net
-curl -O https://raw.githubusercontent.com/naiba/cloudcode/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/vkenliu/cloudcode-docker/main/docker-compose.yml
 docker compose up -d
 ```
 
@@ -83,7 +83,7 @@ Browser → CloudCode Platform (Go JSON API + Next.js frontend)
                          [Basic Auth] [Basic Auth] [Basic Auth]
 ```
 
-Container ports are **not published to the host**. All traffic routes through the Go proxy via the internal `cloudcode-net` Docker bridge network. Each container runs OpenCode with `OPENCODE_SERVER_PASSWORD` set to its unique access token, providing defense-in-depth.
+Container ports are published to `127.0.0.1` on a random loopback-only host port (inaccessible from the network). All external traffic routes through the Go proxy. Each container runs OpenCode with `OPENCODE_SERVER_PASSWORD` set to its unique access token, providing defense-in-depth.
 
 ```
 main.go                          Entry point, starts HTTP server, embeds frontend/dist
@@ -141,7 +141,7 @@ For persistent tunnels with custom domains, see the [Cloudflare Tunnel documenta
 - **Backend**: Go 1.25, `net/http` stdlib router, SQLite (via `modernc.org/sqlite`, pure Go no CGO)
 - **Frontend**: Next.js 16 App Router, TypeScript, Tailwind CSS v4, xterm.js for terminal, DOMPurify for log sanitization
 - **Containers**: Docker SDK (`github.com/moby/moby/client`)
-- **Base Image**: Ubuntu 24.04 + Go + Node 22 + Bun + OpenCode + Oh My OpenCode
+- **Base Image**: Ubuntu 24.04 + Go + Node 22 + Bun + OpenCode + oh-my-opencode
 
 ## Development
 
@@ -191,7 +191,7 @@ docker build -t cloudcode:latest -f Dockerfile.platform .
 
 - **Platform token auth** — All routes protected by session cookie; login rate-limited to 10 attempts / IP / 60s
 - **Per-instance access tokens** — Each instance has a unique 32-byte hex token. Required to access the web UI (`?token=` or `_cc_inst_token_{id}` cookie) and for SDK/CLI access (`Authorization: Bearer` or `--password`). Tokens are enforced at two layers: the CloudCode proxy and OpenCode's native `OPENCODE_SERVER_PASSWORD` Basic Auth inside the container.
-- **No host port exposure** — Container ports are not published to the host. Traffic routes exclusively through the CloudCode proxy via `cloudcode-net`.
+- **No network port exposure** — Container ports are published only to `127.0.0.1` (loopback) on a random port chosen by Docker. They are unreachable from the network; all external traffic routes through the CloudCode proxy.
 - **Session management** — Existing session invalidated on re-login; sessions stored in memory (cleared on restart)
 - **WS tokens** — One-time tokens for cross-origin WebSocket auth; 60s TTL, pruned by background goroutine
 - **Path traversal protection** — All config file operations validated by `containedPath`; `dirName` restricted to an allowlist
