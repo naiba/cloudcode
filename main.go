@@ -29,14 +29,19 @@ func main() {
 		dataDir         = flag.String("data", "./data", "Data directory for SQLite database")
 		imgName         = flag.String("image", "ghcr.io/naiba/cloudcode-base:latest", "Docker image name for opencode instances")
 		noDocker        = flag.Bool("no-docker", false, "Skip Docker initialization (for UI preview)")
-		corsOrigin      = flag.String("cors-origin", "", "Allowed CORS origin for dev (e.g. http://localhost:3000)")
+		corsOrigin      = flag.String("cors-origin", "", "Comma-separated CORS origins for the platform API, e.g. http://localhost:3000,http://localhost:4000")
 		accessToken     = flag.String("access-token", "", "Required bearer token / password for accessing the platform")
-		proxyCORSOrigin = flag.String("proxy-cors-origin", "", "Comma-separated CORS origins injected into proxied instance responses, e.g. http://localhost:3000,http://localhost:4000 (empty = disabled)")
+		proxyCORSOrigin = flag.String("proxy-cors-origin", "", "Comma-separated CORS origins injected into proxied instance responses (defaults to --cors-origin if unset)")
 	)
 	flag.Parse()
 
 	if *accessToken == "" {
 		log.Fatal("--access-token is required. Set a strong secret token to protect the platform.")
+	}
+
+	// If --proxy-cors-origin not explicitly set, inherit from --cors-origin.
+	if *proxyCORSOrigin == "" {
+		*proxyCORSOrigin = *corsOrigin
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -77,23 +82,19 @@ func main() {
 		log.Fatalf("Failed to sub embedded SPA: %v", err)
 	}
 
-	var proxyCORSOrigins []string
-	for _, o := range strings.Split(*proxyCORSOrigin, ",") {
-		if o = strings.TrimSpace(o); o != "" {
-			proxyCORSOrigins = append(proxyCORSOrigins, o)
-		}
-	}
+	corsOrigins := parseOrigins(*corsOrigin)
+	proxyCORSOrigins := parseOrigins(*proxyCORSOrigin)
 
 	rp := proxy.New(proxyCORSOrigins)
-	h := handler.New(db, dm, rp, cfgMgr, spaFiles, *accessToken, *corsOrigin)
+	h := handler.New(db, dm, rp, cfgMgr, spaFiles, *accessToken, corsOrigins)
 
 	mux := http.NewServeMux()
 
 	// CORS middleware for development
 	var rootHandler http.Handler = mux
-	if *corsOrigin != "" {
-		log.Printf("CORS enabled for origin: %s", *corsOrigin)
-		rootHandler = corsMiddleware(*corsOrigin, mux)
+	if len(corsOrigins) > 0 {
+		log.Printf("CORS enabled for origins: %s", strings.Join(corsOrigins, ", "))
+		rootHandler = corsMiddleware(corsOrigins, mux)
 	}
 
 	h.RegisterRoutes(mux)
@@ -126,12 +127,35 @@ func main() {
 	}
 }
 
-func corsMiddleware(origin string, next http.Handler) http.Handler {
+// parseOrigins splits a comma-separated origin string into a deduplicated slice.
+func parseOrigins(s string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, o := range strings.Split(s, ",") {
+		if o = strings.TrimSpace(o); o != "" && !seen[o] {
+			seen[o] = true
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// corsMiddleware reflects the request Origin back if it is in the allowlist.
+func corsMiddleware(origins []string, next http.Handler) http.Handler {
+	set := make(map[string]struct{}, len(origins))
+	for _, o := range origins {
+		set[strings.ToLower(o)] = struct{}{}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if _, ok := set[strings.ToLower(origin)]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

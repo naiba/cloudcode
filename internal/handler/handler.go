@@ -41,7 +41,7 @@ type Handler struct {
 	spaFS        fs.FS
 	portPool     *PortPool
 	accessToken  string
-	corsOrigin   string   // allowed dev origin for WS CheckOrigin
+	corsOrigins  []string // allowed dev origins for WS CheckOrigin
 	sessions     sync.Map // sessionID (string) → struct{}
 	wsTokens     sync.Map // one-time WS token (string) → wsTokenEntry
 	loginAttempts sync.Map // IP (string) → *loginState
@@ -92,7 +92,7 @@ func (pp *PortPool) MarkUsed(port int) {
 // New creates a new Handler. spaFiles is an fs.FS rooted at the frontend dist
 // directory (must contain index.html). Pass nil to disable SPA serving (returns
 // 404 for all non-API routes).
-func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *config.Manager, spaFiles fs.FS, accessToken, corsOrigin string) *Handler {
+func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *config.Manager, spaFiles fs.FS, accessToken string, corsOrigins []string) *Handler {
 	h := &Handler{
 		store:       s,
 		docker:      dm,
@@ -101,7 +101,7 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 		spaFS:       spaFiles,
 		portPool:    NewPortPool(10000, 10100),
 		accessToken: accessToken,
-		corsOrigin:  corsOrigin,
+		corsOrigins: corsOrigins,
 	}
 
 	instances, err := s.List()
@@ -1068,9 +1068,11 @@ func (h *Handler) wsUpgrader() *websocket.Upgrader {
 			if strings.EqualFold(bareOrigin, host) {
 				return true
 			}
-			// Also accept the configured CORS origin (e.g. dev frontend at :4000).
-			if h.corsOrigin != "" && strings.EqualFold(origin, h.corsOrigin) {
-				return true
+			// Also accept any configured CORS origin (e.g. dev frontend).
+			for _, allowed := range h.corsOrigins {
+				if strings.EqualFold(origin, allowed) {
+					return true
+				}
 			}
 			return false
 		},
