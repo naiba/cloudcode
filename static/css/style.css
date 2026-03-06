@@ -205,6 +205,16 @@ main.container {
     text-decoration: none;
     letter-spacing: -0.04em;
     transition: color var(--transition-fast), text-shadow var(--transition);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+.logo-icon {
+    flex-shrink: 0;
+    transition: transform var(--transition);
+}
+.logo:hover .logo-icon {
+    transform: translateY(-1px) scale(1.05);
 }
 .logo:hover {
     color: var(--primary);

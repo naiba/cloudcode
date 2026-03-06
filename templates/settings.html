@@ -81,7 +81,7 @@
         <div class="dir-file-item">
             <span class="dir-file-name mono">{{.SkillName}}</span>
             <div class="actions">
-                <button class="btn btn-sm" onclick="openAgentsSkillDialog('{{.RelPath}}', '{{.SkillName}}')">View</button>
+                <button class="btn btn-sm" onclick="openAgentsSkillDialog('{{.RelPath}}', '{{.SkillName}}')">Edit</button>
                 <button class="btn btn-sm btn-danger" hx-delete="/settings/agents-skill?name={{.SkillName}}" hx-confirm="Delete skill '{{.SkillName}}'? This will remove the entire skill directory.">Delete</button>
             </div>
         </div>
@@ -169,29 +169,12 @@ function openNewFileDialog(dir) {
 }
 
 function openAgentsSkillDialog(relPath, skillName) {
-    document.getElementById('file-dialog-title').textContent = 'Skill: ' + skillName;
-    document.getElementById('file-dialog-dir').value = '';
-    document.getElementById('file-dialog-filename').value = '';
-    document.getElementById('filename-group').style.display = 'none';
-    document.getElementById('file-dialog-content').value = 'Loading...';
-    document.getElementById('file-dialog-content').readOnly = true;
-    document.getElementById('file-dialog-save').style.display = 'none';
-    document.getElementById('file-dialog').showModal();
-
-    fetch('/settings/file?path=' + encodeURIComponent(relPath))
-        .then(function(r) { return r.text(); })
-        .then(function(text) { document.getElementById('file-dialog-content').value = text; });
-}
-
-function openEditFileDialog(configDir, relPath, name) {
-    document.getElementById('file-dialog-title').textContent = 'Edit ' + name;
-    var parts = relPath.replace('opencode/', '').split('/');
-    var dir = parts[0];
-    var filename = parts.slice(1).join('/');
-    document.getElementById('file-dialog-dir').value = dir;
-    document.getElementById('file-dialog-filename').value = filename;
+    document.getElementById('file-dialog-title').textContent = 'Edit Skill: ' + skillName;
+    // agents-skills 文件的保存：复用 dir-file 表单，dir 设为特殊标记让后端识别
+    document.getElementById('file-dialog-dir').value = '__agents-skill__';
+    document.getElementById('file-dialog-filename').value = relPath;
     document.getElementById('file-dialog-filename').readOnly = true;
-    document.getElementById('filename-group').style.display = '';
+    document.getElementById('filename-group').style.display = 'none';
     document.getElementById('file-dialog-content').readOnly = false;
     document.getElementById('file-dialog-save').style.display = '';
     document.getElementById('file-dialog-content').value = 'Loading...';

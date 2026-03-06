@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     openssh-client \
     procps \
+    python3-pip \
     tree \
     unzip \
     vim-tiny \

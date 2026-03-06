@@ -24,6 +24,8 @@ import (
 	"github.com/naiba/cloudcode/internal/store"
 )
 
+
+
 type Handler struct {
 	store    *store.Store
 	docker   *docker.Manager
@@ -101,6 +103,11 @@ func New(s *store.Store, dm *docker.Manager, rp *proxy.ReverseProxy, cfgMgr *con
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Static files
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+
+	// Favicon 和 Logo: 从平台路由直接服务，不代理到容器
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "static/favicon.ico")
+	})
 
 	mux.HandleFunc("GET /{$}", h.handleDashboard)
 	mux.HandleFunc("GET /instances/new", h.handleNewInstanceForm)
@@ -719,7 +726,13 @@ func (h *Handler) handleSaveDirFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	relPath := filepath.Join(config.DirOpenCodeConfig, dir, filename)
+	// agents-skill 编辑：dir 为特殊标记时，filename 本身就是完整的 relPath（如 agents-skills/skills/xxx/SKILL.md）
+	var relPath string
+	if dir == "__agents-skill__" {
+		relPath = filename
+	} else {
+		relPath = filepath.Join(config.DirOpenCodeConfig, dir, filename)
+	}
 	if err := h.config.WriteFile(relPath, content); err != nil {
 		respondError(w, "Failed to save file: "+err.Error())
 		return
