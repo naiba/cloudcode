@@ -123,3 +123,7 @@ go vet ./...
 # Build check
 go build ./...
 ```
+
+## Security
+
+This project is designed for **single-user** use behind [Cloudflare Zero Trust](https://developers.cloudflare.com/cloudflare-one/). It does not provide built-in authentication. PRs adding auth features will not be accepted.

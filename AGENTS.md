@@ -195,3 +195,7 @@ cookie 是全局的（`Path=/`），同时只能有一个活跃的 Web UI 实例
 - 改模板/CSS/JS 不需要编译，但需要重启服务（模板在启动时加载）
 - handler 新增路由时在 `RegisterRoutes` 方法中按已有格式添加
 - 新增配置文件管理时更新 `config.go` 的相关切片和 `EditableFiles()`
+
+## 补充文档说明
+
+这个项目建议放在 Cloudflare 的 Zero Trust 服务背后使用，自身不提供鉴权，仅为一个人提供服务，不接受 PR 增加相关功能。

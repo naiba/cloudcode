@@ -123,3 +123,7 @@ go vet ./...
 # 编译检查
 go build ./...
 ```
+
+## 安全
+
+本项目设计为**单用户**使用，建议部署在 [Cloudflare Zero Trust](https://developers.cloudflare.com/cloudflare-one/) 背后。项目自身不提供鉴权功能，不接受添加鉴权相关功能的 PR。
