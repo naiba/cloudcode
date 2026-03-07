@@ -65,14 +65,19 @@ RUN bun install -g oh-my-opencode-linux-arm64@latest || true
 # Install OpenSpec (spec-driven development for AI coding assistants)
 RUN bun install -g @fission-ai/openspec@latest
 
+# Install Pinchtab (browser control for AI agents)
+RUN bun install -g pinchtab@latest
+
 # Install Playwright chromium with all system dependencies (for browser automation skills)
 # --with-deps auto-installs required shared libraries (libatk, libnss3, libgbm, etc.)
 RUN npx playwright install --with-deps chromium
-# Symlink chromium binary to well-known paths so tools can find it without PLAYWRIGHT_BROWSERS_PATH
+# cloudcode-browser: direct symlink to Playwright's Chromium binary (no --no-sandbox, for programmatic use)
+# chromium-browser: wrapper that injects --no-sandbox (required when running as root in containers)
 # find handles both chrome-linux/ (arm64) and chrome-linux64/ (amd64) directory names across architectures
 RUN CHROME_BIN=$(find /root/.cache/ms-playwright/chromium-* -name chrome -type f | head -1) \
-    && ln -sf "$CHROME_BIN" /usr/bin/chromium-browser \
-    && ln -sf "$CHROME_BIN" /usr/bin/chrome
+    && ln -sf "$CHROME_BIN" /usr/bin/cloudcode-browser \
+    && printf '#!/bin/sh\nexec cloudcode-browser --no-sandbox "$@"\n' > /usr/bin/chromium-browser \
+    && chmod +x /usr/bin/chromium-browser
 
 # Create workspace directory
 RUN mkdir -p /workspace /root/.opencode /root/.config/opencode /root/.local/share/opencode /root/.agents/skills
