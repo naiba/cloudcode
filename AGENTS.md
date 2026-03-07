@@ -184,9 +184,8 @@ cookie 是全局的（`Path=/`），同时只能有一个活跃的 Web UI 实例
 - 容器资源限制：创建时可配置内存（MB）和 CPU（核数），0 表示不限制，默认 2GB/2核
 - base 镜像基于 Ubuntu 24.04，包含 Go 1.23、Node 22、Bun
 - `oh-my-opencode` 通过 `bun install -g` 全局安装（非 git clone）
-- 容器内预装 `cloudflared`，可通过 Cloudflare Tunnel 将容器内服务暴露到公网
-- 容器内预装 Playwright Chromium（`~/.cache/ms-playwright/chromium-*/chrome-linux/chrome`），已符号链接到 `/usr/bin/chromium-browser` 和 `/usr/bin/chrome`
-- 容器内 cloudflared、chromium 使用说明通过 `_cloudcode-instructions.md` 注入，启动时自动写入
+- 容器内预装 `cloudflared`、`chromium-browser`（Playwright Chromium，wrapper 脚本已注入 --no-sandbox）、`pinchtab`（AI 浏览器控制）
+- 容器内工具使用说明通过 `_cloudcode-instructions.md` 注入，启动时自动写入
 
 ## 修改代码时注意
 
