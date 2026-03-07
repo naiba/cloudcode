@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tree \
     unzip \
     vim-tiny \
-    dumb-init \
+    tini \
     tmux \
     wget
 
@@ -91,6 +91,6 @@ WORKDIR /workspace
 
 EXPOSE 4096
 
-# dumb-init 作为 PID 1：正确转发信号给子进程组，并回收孤儿/僵尸进程。
+# tini 作为 PID 1：正确转发信号给子进程组，并回收孤儿/僵尸进程。
 # 没有它，opencode 作为 PID 1 不会 wait() 孤儿进程（如 chromium、git），导致僵尸堆积。
-ENTRYPOINT ["dumb-init", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]
