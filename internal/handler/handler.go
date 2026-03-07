@@ -11,8 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,8 +23,6 @@ import (
 	"github.com/naiba/cloudcode/internal/proxy"
 	"github.com/naiba/cloudcode/internal/store"
 )
-
-
 
 type Handler struct {
 	store    *store.Store
@@ -243,15 +241,20 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 先返回响应避免浏览器超时，容器创建在后台异步完成
+	w.Header().Set("HX-Redirect", "/")
+	w.WriteHeader(http.StatusCreated)
+
 	if h.docker != nil {
-		// 使用 background context：创建容器不能依赖 request context，否则用户关闭浏览器会中断操作
-		containerID, err := h.docker.CreateContainer(context.Background(), inst)
-		if err != nil {
-			log.Printf("Error creating container for %s: %v", inst.ID, err)
-			inst.Status = "error"
-			inst.ErrorMsg = err.Error()
-			_ = h.store.Update(inst)
-		} else {
+		go func() {
+			containerID, err := h.docker.CreateContainer(context.Background(), inst)
+			if err != nil {
+				log.Printf("Error creating container for %s: %v", inst.ID, err)
+				inst.Status = "error"
+				inst.ErrorMsg = err.Error()
+				_ = h.store.Update(inst)
+				return
+			}
 			inst.ContainerID = containerID
 			inst.Status = "running"
 			_ = h.store.Update(inst)
@@ -259,11 +262,8 @@ func (h *Handler) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			if err := h.proxy.Register(inst.ID, inst.Port); err != nil {
 				log.Printf("Error registering proxy for %s: %v", inst.ID, err)
 			}
-		}
+		}()
 	}
-
-	w.Header().Set("HX-Redirect", "/")
-	w.WriteHeader(http.StatusCreated)
 }
 
 func (h *Handler) handleGetInstance(w http.ResponseWriter, r *http.Request) {
@@ -296,15 +296,7 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if inst.ContainerID != "" && h.docker != nil {
-		// 使用 background context：删除容器不能依赖 request context，否则用户关闭浏览器会中断操作
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := h.docker.RemoveContainerAndVolume(ctx, inst.ContainerID, id); err != nil {
-			log.Printf("Error removing container for %s: %v", id, err)
-		}
-	}
-
+	containerID := inst.ContainerID
 	h.proxy.Unregister(id)
 	h.portPool.Release(inst.Port)
 	h.config.RemoveInstanceData(id)
@@ -321,6 +313,17 @@ func (h *Handler) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("HX-Trigger", fmt.Sprintf(`{"instanceDeleted":{"id":"%s"}}`, id))
 	}
 	w.WriteHeader(http.StatusOK)
+
+	// 先返回响应避免浏览器超时，容器清理在后台异步完成
+	if containerID != "" && h.docker != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := h.docker.RemoveContainerAndVolume(ctx, containerID, id); err != nil {
+				log.Printf("Error removing container for %s: %v", id, err)
+			}
+		}()
+	}
 }
 
 // --- Instance actions ---
@@ -338,34 +341,34 @@ func (h *Handler) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if inst.ContainerID == "" {
-		// 使用 background context：创建容器不能依赖 request context，否则用户关闭浏览器会中断操作
-		containerID, err := h.docker.CreateContainer(context.Background(), inst)
-		if err != nil {
-			inst.Status = "error"
-			inst.ErrorMsg = err.Error()
-			_ = h.store.Update(inst)
-			respondError(w, "Failed to create container: "+err.Error())
-			return
-		}
-		inst.ContainerID = containerID
-	} else {
-		// 使用 background context：启动容器不能依赖 request context，否则用户关闭浏览器会中断操作
-		if err := h.docker.StartContainer(context.Background(), inst.ContainerID); err != nil {
-			inst.Status = "error"
-			inst.ErrorMsg = err.Error()
-			_ = h.store.Update(inst)
-			respondError(w, "Failed to start container: "+err.Error())
-			return
-		}
-	}
-
-	inst.Status = "running"
+	// 先返回响应避免浏览器超时，容器操作在后台异步完成
+	inst.Status = "starting"
 	inst.ErrorMsg = ""
 	_ = h.store.Update(inst)
-	_ = h.proxy.Register(inst.ID, inst.Port)
-
 	h.renderPartial(w, "instance_row", inst)
+
+	go func() {
+		if inst.ContainerID == "" {
+			containerID, err := h.docker.CreateContainer(context.Background(), inst)
+			if err != nil {
+				inst.Status = "error"
+				inst.ErrorMsg = err.Error()
+				_ = h.store.Update(inst)
+				return
+			}
+			inst.ContainerID = containerID
+		} else {
+			if err := h.docker.StartContainer(context.Background(), inst.ContainerID); err != nil {
+				inst.Status = "error"
+				inst.ErrorMsg = err.Error()
+				_ = h.store.Update(inst)
+				return
+			}
+		}
+		inst.Status = "running"
+		_ = h.store.Update(inst)
+		_ = h.proxy.Register(inst.ID, inst.Port)
+	}()
 }
 
 func (h *Handler) handleStopInstance(w http.ResponseWriter, r *http.Request) {
@@ -376,19 +379,25 @@ func (h *Handler) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if inst.ContainerID != "" && h.docker != nil {
-		// 使用 background context：停止容器不能依赖 request context，否则用户关闭浏览器会中断操作
-		if err := h.docker.StopContainer(context.Background(), inst.ContainerID); err != nil {
-			respondError(w, "Failed to stop container: "+err.Error())
-			return
-		}
-	}
-
-	inst.Status = "stopped"
+	// 先返回响应避免浏览器超时，容器操作在后台异步完成
+	inst.Status = "stopping"
 	_ = h.store.Update(inst)
 	h.proxy.Unregister(id)
-
 	h.renderPartial(w, "instance_row", inst)
+
+	if inst.ContainerID != "" && h.docker != nil {
+		go func() {
+			if err := h.docker.StopContainer(context.Background(), inst.ContainerID); err != nil {
+				log.Printf("Error stopping container for %s: %v", id, err)
+				inst.Status = "error"
+				inst.ErrorMsg = err.Error()
+				_ = h.store.Update(inst)
+				return
+			}
+			inst.Status = "stopped"
+			_ = h.store.Update(inst)
+		}()
+	}
 }
 
 func (h *Handler) handleRestartInstance(w http.ResponseWriter, r *http.Request) {
@@ -404,29 +413,32 @@ func (h *Handler) handleRestartInstance(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Remove old container and recreate to trigger entrypoint (updates dependencies)
-	if inst.ContainerID != "" {
-		// 使用 background context：停止和删除容器不能依赖 request context，否则用户关闭浏览器会中断操作
-		_ = h.docker.StopContainer(context.Background(), inst.ContainerID)
-		_ = h.docker.RemoveContainer(context.Background(), inst.ContainerID)
-	}
-
-	// 使用 background context：创建容器不能依赖 request context，否则用户关闭浏览器会中断操作
-	containerID, err := h.docker.CreateContainer(context.Background(), inst)
-	if err != nil {
-		inst.Status = "error"
-		inst.ErrorMsg = err.Error()
-		_ = h.store.Update(inst)
-		respondError(w, "Failed to restart container: "+err.Error())
-		return
-	}
-	inst.ContainerID = containerID
-
-	inst.Status = "running"
+	// 先返回响应避免浏览器超时，容器操作在后台异步完成
+	inst.Status = "restarting"
+	inst.ErrorMsg = ""
 	_ = h.store.Update(inst)
-	_ = h.proxy.Register(inst.ID, inst.Port)
-
+	h.proxy.Unregister(id)
 	h.renderPartial(w, "instance_row", inst)
+
+	go func() {
+		// Remove old container and recreate to trigger entrypoint (updates dependencies)
+		if inst.ContainerID != "" {
+			_ = h.docker.StopContainer(context.Background(), inst.ContainerID)
+			_ = h.docker.RemoveContainer(context.Background(), inst.ContainerID)
+		}
+
+		containerID, err := h.docker.CreateContainer(context.Background(), inst)
+		if err != nil {
+			inst.Status = "error"
+			inst.ErrorMsg = err.Error()
+			_ = h.store.Update(inst)
+			return
+		}
+		inst.ContainerID = containerID
+		inst.Status = "running"
+		_ = h.store.Update(inst)
+		_ = h.proxy.Register(inst.ID, inst.Port)
+	}()
 }
 
 func (h *Handler) handleLogsWS(w http.ResponseWriter, r *http.Request) {
