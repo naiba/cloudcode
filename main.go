@@ -27,7 +27,7 @@ func main() {
 	var (
 		addr        = flag.String("addr", ":8080", "HTTP listen address")
 		dataDir     = flag.String("data", "./data", "Data directory for SQLite database")
-		imgName     = flag.String("image", "ghcr.io/naiba/cloudcode-base:latest", "Docker image name for opencode instances")
+		imgName     = flag.String("image", "cloudcode-base:latest", "Docker image name for opencode instances")
 		noDocker    = flag.Bool("no-docker", false, "Skip Docker initialization (for UI preview)")
 		corsOrigin  = flag.String("cors-origin", "", "Comma-separated CORS origins for the platform API, e.g. http://localhost:3000,http://localhost:4000")
 		accessToken = flag.String("access-token", "", "Required bearer token / password for accessing the platform")
@@ -150,7 +150,7 @@ func corsMiddleware(origins []string, next http.Handler) http.Handler {
 		if origin != "" {
 			if _, ok := set[strings.ToLower(origin)]; ok {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
