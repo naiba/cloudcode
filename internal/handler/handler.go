@@ -1256,16 +1256,25 @@ func (h *Handler) apiSaveDirFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "dir and filename are required")
 		return
 	}
-	if !validDirNames[req.Dir] {
-		writeError(w, http.StatusBadRequest, "invalid dir: must be one of commands, agents, skills, plugins")
-		return
+
+	// Special marker used by the frontend to edit agents-skills files (e.g.
+	// agents-skills/skills/foo/SKILL.md). In this case Filename is already
+	// the full relPath returned by ListAgentsSkills; containedPath validates it.
+	var relPath string
+	if req.Dir == "__agents-skill__" {
+		relPath = req.Filename
+	} else {
+		if !validDirNames[req.Dir] {
+			writeError(w, http.StatusBadRequest, "invalid dir: must be one of commands, agents, skills, plugins")
+			return
+		}
+		// M13: validate filename — no path separators, no NUL, reasonable length.
+		if strings.ContainsAny(req.Filename, "/\\\x00") || len(req.Filename) > 255 || req.Filename == "." || req.Filename == ".." {
+			writeError(w, http.StatusBadRequest, "invalid filename")
+			return
+		}
+		relPath = filepath.Join(config.DirOpenCodeConfig, req.Dir, req.Filename)
 	}
-	// M13: validate filename — no path separators, no NUL, reasonable length.
-	if strings.ContainsAny(req.Filename, "/\\\x00") || len(req.Filename) > 255 || req.Filename == "." || req.Filename == ".." {
-		writeError(w, http.StatusBadRequest, "invalid filename")
-		return
-	}
-	relPath := filepath.Join(config.DirOpenCodeConfig, req.Dir, req.Filename)
 	if err := h.config.WriteFile(relPath, req.Content); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save file: "+err.Error())
 		return
