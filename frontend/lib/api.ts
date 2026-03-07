@@ -30,7 +30,7 @@ export interface ConfigFile {
   name: string;
   rel_path: string;
   hint: string;
-  content: string;
+  content: string | null; // null for auth.json (load on demand)
 }
 
 export interface DirFile {

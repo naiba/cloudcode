@@ -681,7 +681,7 @@ export default function SettingsPage() {
                   <ConfigFileEditor
                     key={cf.rel_path}
                     relPath={cf.rel_path}
-                    initialContent={cf.content}
+                    initialContent={cf.content ?? ""}
                   />
                 </div>
               );
