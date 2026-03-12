@@ -165,7 +165,7 @@ The `_cc_inst` cookie is global (`Path=/`), so only one instance's Web UI is act
 - No port pool — containers publish to `127.0.0.1:0` (Docker assigns a random loopback port)
 - Resource limits: memory (MB) and CPU (cores) configurable at creation; 0 = unlimited
 - Base image: Ubuntu 24.04 + Go 1.24 + Node 22 + Bun + Python 3 + uv
-- `oh-my-opencode` installed globally via `bun install -g`
+- `adit-core` agent framework installed via install script
 - `cloudflared` pre-installed in each container
 - Playwright Chromium pre-installed, symlinked to `/usr/bin/chromium-browser` and `/usr/bin/chrome`
 

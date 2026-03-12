@@ -315,7 +315,11 @@ export default function InstanceDetailPage() {
           router.push("/");
           return;
         } else {
-          setInstance(result);
+          // Preserve disk_usage_bytes from prior fetch since poll doesn't include it.
+          setInstance((prev) => ({
+            ...result,
+            disk_usage_bytes: result.disk_usage_bytes ?? prev?.disk_usage_bytes,
+          }));
         }
       } catch {
         // ignore
@@ -333,7 +337,11 @@ export default function InstanceDetailPage() {
     setActionError("");
     try {
       const updated = await api.instances[action](id);
-      setInstance(updated);
+      // Preserve disk_usage_bytes since action responses don't include it.
+      setInstance((prev) => ({
+        ...updated,
+        disk_usage_bytes: updated.disk_usage_bytes ?? prev?.disk_usage_bytes,
+      }));
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {

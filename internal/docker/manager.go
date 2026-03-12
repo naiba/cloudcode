@@ -448,6 +448,7 @@ func (m *Manager) VolumeDiskUsage(ctx context.Context) (map[string]int64, error)
 	}
 
 	usage := make(map[string]int64)
+	// result.Volumes is a value struct; Items is a nil-safe slice.
 	for _, vol := range result.Volumes.Items {
 		if !strings.HasPrefix(vol.Name, volumePrefix) {
 			continue

@@ -10,7 +10,7 @@ bun update -g opencode-ai@latest 2>/dev/null || echo "Warning: OpenCode update f
 echo "  OpenCode version: $(opencode --version 2>/dev/null || echo 'unknown')"
 
 echo "[2/4] Updating adit-core..."
-curl -fsSL https://raw.githubusercontent.com/vkenliu/adit-core/main/install.sh | bash 2>/dev/null || echo "Warning: adit-core update failed, using existing version"
+curl -fsSL https://raw.githubusercontent.com/vkenliu/adit-core/main/install.sh | bash || echo "Warning: adit-core update failed, using existing version"
 
 echo "[3/4] Updating skills.sh skills..."
 # .skill-lock.json is bind-mounted at /root/.agents/ so updates are shared across instances

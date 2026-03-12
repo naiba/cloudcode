@@ -241,10 +241,16 @@ export default function DashboardPage() {
     loadInstances();
   }, [loadInstances]);
 
-  // Fetch disk usage lazily (doesn't block initial render).
+  // Fetch disk usage once after initial load (server caches for 1 hour).
+  const diskFetched = useRef(false);
   useEffect(() => {
-    api.instances.diskUsage().then(setDiskUsage).catch(() => {});
-  }, [instances.length]);
+    if (diskFetched.current) return;
+    diskFetched.current = true;
+    api.instances
+      .diskUsage()
+      .then(setDiskUsage)
+      .catch((e) => console.warn("Failed to fetch disk usage:", e));
+  }, []);
 
   // Single batch poller for all instances — one request every 10 s instead of
   // one per card. instancesRef keeps a stable reference so the poll closure

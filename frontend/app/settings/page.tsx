@@ -541,6 +541,11 @@ function CORSOriginsEditor({
   const [saveOk, setSaveOk] = useState(false);
   const [newOrigin, setNewOrigin] = useState("");
 
+  // Re-sync from parent when settings are reloaded after save.
+  useEffect(() => {
+    setOrigins(initial);
+  }, [initial]);
+
   const addOrigin = () => {
     const trimmed = newOrigin.trim();
     if (
@@ -563,8 +568,8 @@ function CORSOriginsEditor({
       setSaveOk(true);
       setTimeout(() => setSaveOk(false), 3000);
       onSaved();
-    } catch {
-      alert("Failed to save CORS origins");
+    } catch (e) {
+      alert("Failed to save CORS origins: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setSaving(false);
     }
@@ -630,10 +635,16 @@ function RecyclingPolicyEditor({
 }) {
   const [enabled, setEnabled] = useState(initial.enabled);
   const [maxStopped, setMaxStopped] = useState(
-    initial.max_stopped_count || 5
+    initial.max_stopped_count ?? 5
   );
   const [saving, setSaving] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
+
+  // Re-sync from parent when settings are reloaded after save.
+  useEffect(() => {
+    setEnabled(initial.enabled);
+    setMaxStopped(initial.max_stopped_count ?? 5);
+  }, [initial]);
 
   const save = async () => {
     setSaving(true);
@@ -645,8 +656,8 @@ function RecyclingPolicyEditor({
       setSaveOk(true);
       setTimeout(() => setSaveOk(false), 3000);
       onSaved();
-    } catch {
-      alert("Failed to save recycling policy");
+    } catch (e) {
+      alert("Failed to save recycling policy: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setSaving(false);
     }
@@ -674,11 +685,11 @@ function RecyclingPolicyEditor({
         </label>
         <input
           type="number"
-          min={1}
+          min={0}
           max={100}
           value={maxStopped}
           onChange={(e) =>
-            setMaxStopped(Math.max(1, parseInt(e.target.value) || 5))
+            setMaxStopped(Math.max(0, parseInt(e.target.value) || 0))
           }
           disabled={!enabled}
           className="w-20 bg-slate-900 text-white px-3 py-2 rounded text-sm font-mono border border-slate-700 focus:border-blue-500 focus:outline-none disabled:opacity-40"
@@ -687,9 +698,9 @@ function RecyclingPolicyEditor({
 
       {enabled && (
         <div className="text-xs text-slate-500 mb-4">
-          When a container stops, if there are more than {maxStopped} stopped
-          instances, the oldest will be automatically removed (container +
-          volume deleted).
+          {maxStopped === 0
+            ? "All inactive instances will be immediately removed when they stop (container + volume deleted)."
+            : `When a container stops, if there are more than ${maxStopped} inactive instance${maxStopped === 1 ? "" : "s"}, the oldest will be automatically removed (container + volume deleted).`}
         </div>
       )}
 

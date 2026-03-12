@@ -281,7 +281,8 @@ func (m *Manager) GetRecyclingPolicy() (RecyclingPolicy, error) {
 	if err := json.Unmarshal(data, &policy); err != nil {
 		return RecyclingPolicy{}, fmt.Errorf("parse %s: %w", FileRecycling, err)
 	}
-	if policy.MaxStoppedCount <= 0 {
+	// MaxStoppedCount=0 is valid (keep none); only fix negative values.
+	if policy.MaxStoppedCount < 0 {
 		policy.MaxStoppedCount = DefaultMaxStoppedCount
 	}
 	return policy, nil
@@ -289,7 +290,7 @@ func (m *Manager) GetRecyclingPolicy() (RecyclingPolicy, error) {
 
 // SetRecyclingPolicy writes the recycling policy to recycling.json.
 func (m *Manager) SetRecyclingPolicy(policy RecyclingPolicy) error {
-	if policy.MaxStoppedCount <= 0 {
+	if policy.MaxStoppedCount < 0 {
 		policy.MaxStoppedCount = DefaultMaxStoppedCount
 	}
 	data, err := json.MarshalIndent(policy, "", "  ")

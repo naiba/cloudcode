@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -56,6 +57,7 @@ type Handler struct {
 	spaFS         fs.FS
 	accessToken   string
 	corsOrigins   []string      // allowed dev origins for WS CheckOrigin
+	recyclingMu   sync.Mutex    // prevents concurrent enforceRecyclingPolicy runs
 	sessions      sync.Map      // sessionID (string) → sessionEntry
 	wsTokens      sync.Map      // one-time WS token (string) → wsTokenEntry
 	loginAttempts sync.Map      // IP (string) → *loginState
@@ -703,8 +705,14 @@ func (h *Handler) apiDeleteInstance(w http.ResponseWriter, r *http.Request) {
 // enforceRecyclingPolicy checks the recycling policy and removes the oldest
 // inactive (stopped/exited/error) instances if they exceed the configured
 // maximum. Runs in the background so it does not block the caller.
+// recyclingMu prevents concurrent runs from racing on the same instances.
 func (h *Handler) enforceRecyclingPolicy() {
 	go func() {
+		// Serialize recycling runs to prevent TOCTOU races where concurrent
+		// goroutines read the same list and try to delete the same instances.
+		h.recyclingMu.Lock()
+		defer h.recyclingMu.Unlock()
+
 		policy, err := h.config.GetRecyclingPolicy()
 		if err != nil || !policy.Enabled {
 			return
@@ -1279,14 +1287,29 @@ func (h *Handler) apiSaveCORSOrigins(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// Deduplicate and trim whitespace.
+	// Validate, deduplicate, and trim whitespace.
 	seen := make(map[string]bool)
 	var clean []string
 	for _, o := range req.Origins {
 		o = strings.TrimSpace(o)
-		if o != "" && !seen[strings.ToLower(o)] {
-			seen[strings.ToLower(o)] = true
-			clean = append(clean, o)
+		if o == "" {
+			continue
+		}
+		// Validate origin format: must be scheme://host[:port] with no path.
+		u, err := url.Parse(o)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid origin %q: must be scheme://host[:port]", o))
+			return
+		}
+		if u.Path != "" && u.Path != "/" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid origin %q: must not contain a path", o))
+			return
+		}
+		// Normalize: scheme://host (strip trailing slash)
+		normalized := u.Scheme + "://" + u.Host
+		if !seen[strings.ToLower(normalized)] {
+			seen[strings.ToLower(normalized)] = true
+			clean = append(clean, normalized)
 		}
 	}
 	if clean == nil {

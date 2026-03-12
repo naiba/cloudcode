@@ -21,8 +21,8 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 # ── Layer 1: Base system packages (most stable, cached aggressively) ──────────
 # ripgrep (rg)  — required by opencode's built-in search/grep tool
 # fd-find       — fast file discovery (aliased as 'fd' below)
-# fzf           — fuzzy file/history search used by oh-my-opencode shell integration
-# zoxide        — smarter cd replacement used by oh-my-opencode
+# fzf           — fuzzy file/history search for interactive shells
+# zoxide        — smarter cd replacement for interactive shells
 # zsh           — richer interactive shell (Anthropic devcontainer default)
 # gnupg2        — GPG for signed commits and key management
 # iproute2      — provides 'ip' command for network debugging inside containers

@@ -145,7 +145,7 @@ For persistent tunnels with custom domains, see the [Cloudflare Tunnel documenta
 - **Backend**: Go 1.24, `net/http` stdlib router, SQLite (via `modernc.org/sqlite`, pure Go no CGO)
 - **Frontend**: Next.js 16 App Router, TypeScript, Tailwind CSS v4, xterm.js for terminal, DOMPurify for log sanitization
 - **Containers**: Docker SDK (`github.com/moby/moby/client`)
-- **Base Image**: Ubuntu 24.04 + Go 1.24 + Node 22 + Bun + Python 3 + uv + OpenCode + oh-my-opencode
+- **Base Image**: Ubuntu 24.04 + Go 1.24 + Node 22 + Bun + Python 3 + uv + OpenCode + adit-core
 
 ## Development
 

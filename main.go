@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -77,15 +78,8 @@ func main() {
 	}
 
 	flagOrigins := parseOrigins(*corsOrigin)
-
-	// Load saved CORS origins from config and merge with CLI flag origins.
-	savedOrigins, err := cfgMgr.GetCORSOrigins()
-	if err != nil {
-		log.Printf("Warning: could not read saved CORS origins: %v", err)
-	}
-	allOrigins := mergeOrigins(flagOrigins, savedOrigins)
-	if len(allOrigins) > 0 {
-		log.Printf("CORS enabled for origins: %s", strings.Join(allOrigins, ", "))
+	if len(flagOrigins) > 0 {
+		log.Printf("CORS enabled for CLI origins: %s", strings.Join(flagOrigins, ", "))
 	}
 
 	rp := proxy.New()
@@ -147,30 +141,9 @@ func parseOrigins(s string) []string {
 	return out
 }
 
-// mergeOrigins combines two origin slices, deduplicating by lowercase value.
-func mergeOrigins(a, b []string) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, s := range a {
-		lower := strings.ToLower(strings.TrimSpace(s))
-		if lower != "" && !seen[lower] {
-			seen[lower] = true
-			out = append(out, s)
-		}
-	}
-	for _, s := range b {
-		lower := strings.ToLower(strings.TrimSpace(s))
-		if lower != "" && !seen[lower] {
-			seen[lower] = true
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 // dynamicCORSMiddleware checks the request Origin against both the static CLI
-// flag origins and the config-file origins (re-read on each request so that
-// origins saved via the Settings UI take effect without a server restart).
+// flag origins and the config-file origins. Config origins are cached for 30s
+// to avoid reading cors.json on every request.
 func dynamicCORSMiddleware(flagOrigins []string, cfgMgr *config.Manager, next http.Handler) http.Handler {
 	// Pre-build a set for the static CLI origins (never changes).
 	flagSet := make(map[string]struct{}, len(flagOrigins))
@@ -178,9 +151,33 @@ func dynamicCORSMiddleware(flagOrigins []string, cfgMgr *config.Manager, next ht
 		flagSet[strings.ToLower(o)] = struct{}{}
 	}
 
+	// Cached config origins (re-read every 30s).
+	var (
+		cachedMu      sync.Mutex
+		cachedOrigins []string
+		cachedAt      time.Time
+	)
+	const cacheTTL = 30 * time.Second
+
+	getConfigOrigins := func() []string {
+		cachedMu.Lock()
+		defer cachedMu.Unlock()
+		if time.Since(cachedAt) < cacheTTL {
+			return cachedOrigins
+		}
+		if saved, err := cfgMgr.GetCORSOrigins(); err == nil {
+			cachedOrigins = saved
+		}
+		cachedAt = time.Now()
+		return cachedOrigins
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
+			// Always set Vary: Origin to prevent cache poisoning.
+			w.Header().Add("Vary", "Origin")
+
 			allowed := false
 			lower := strings.ToLower(origin)
 
@@ -189,14 +186,12 @@ func dynamicCORSMiddleware(flagOrigins []string, cfgMgr *config.Manager, next ht
 				allowed = true
 			}
 
-			// Check saved config origins.
+			// Check saved config origins (cached).
 			if !allowed {
-				if saved, err := cfgMgr.GetCORSOrigins(); err == nil {
-					for _, s := range saved {
-						if strings.EqualFold(s, origin) {
-							allowed = true
-							break
-						}
+				for _, s := range getConfigOrigins() {
+					if strings.EqualFold(s, origin) {
+						allowed = true
+						break
 					}
 				}
 			}
