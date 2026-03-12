@@ -241,16 +241,18 @@ export default function DashboardPage() {
     loadInstances();
   }, [loadInstances]);
 
-  // Fetch disk usage once after initial load (server caches for 1 hour).
-  const diskFetched = useRef(false);
+  // Fetch disk usage when instance count changes (creation/deletion).
+  // Server caches for 1 hour so repeated calls are cheap.
+  const prevCountRef = useRef(-1);
   useEffect(() => {
-    if (diskFetched.current) return;
-    diskFetched.current = true;
+    if (loading) return;
+    if (prevCountRef.current === instances.length) return;
+    prevCountRef.current = instances.length;
     api.instances
       .diskUsage()
       .then(setDiskUsage)
       .catch((e) => console.warn("Failed to fetch disk usage:", e));
-  }, []);
+  }, [instances.length, loading]);
 
   // Single batch poller for all instances — one request every 10 s instead of
   // one per card. instancesRef keeps a stable reference so the poll closure

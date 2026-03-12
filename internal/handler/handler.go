@@ -658,6 +658,11 @@ func (h *Handler) apiCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Invalidate disk cache so the new volume appears in usage queries.
+	if h.docker != nil {
+		h.docker.InvalidateDiskCache()
+	}
+
 	writeJSON(w, http.StatusCreated, toInstanceResponse(inst))
 }
 
