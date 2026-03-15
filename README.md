@@ -109,6 +109,7 @@ Configure via environment variables:
 - **Backend**: Go 1.25, `net/http` stdlib router, SQLite (via `modernc.org/sqlite`)
 - **Frontend**: `html/template` + HTMX, vanilla CSS/JS, dark/light theme
 - **Containers**: Docker SDK (`github.com/moby/moby/client`)
+- **Browser Automation**: [PinchTab](https://github.com/pinchtab/pinchtab) MCP server (headless Chromium with stealth mode)
 - **Base Image**: Ubuntu 24.04 + Go + Node 22 + Bun + OpenCode + Oh My OpenCode
 
 ## Development

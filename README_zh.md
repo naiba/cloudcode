@@ -109,6 +109,7 @@ cloudflared tunnel --url http://localhost:3000
 - **后端**：Go 1.25，`net/http` 标准库路由，SQLite（`modernc.org/sqlite`，纯 Go 无 CGO）
 - **前端**：`html/template` + HTMX，原生 CSS/JS，暗色/亮色主题
 - **容器**：Docker SDK（`github.com/moby/moby/client`）
+- **浏览器自动化**：[PinchTab](https://github.com/pinchtab/pinchtab) MCP server（headless Chromium + stealth 模式）
 - **base 镜像**：Ubuntu 24.04 + Go + Node 22 + Bun + OpenCode + Oh My OpenCode
 
 ## 开发
