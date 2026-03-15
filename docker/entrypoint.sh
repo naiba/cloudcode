@@ -41,7 +41,7 @@ if [ -f /root/.config/opencode/oh-my-opencode.json ]; then
 fi
 
 echo "[6/7] Starting Pinchtab browser server..."
-PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full pinchtab >/dev/null 2>&1 &
+PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full pinchtab server >/dev/null 2>&1 &
 PINCHTAB_PID=$!
 for i in $(seq 1 10); do
     pinchtab health >/dev/null 2>&1 && break
