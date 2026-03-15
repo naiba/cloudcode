@@ -40,9 +40,22 @@ if [ -f /root/.config/opencode/oh-my-opencode.json ]; then
     echo "[*] Global oh-my-opencode config detected"
 fi
 
+echo "[6/6] Starting Pinchtab browser server..."
+PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full pinchtab >/dev/null 2>&1 &
+PINCHTAB_PID=$!
+for i in $(seq 1 10); do
+    pinchtab health >/dev/null 2>&1 && break
+    sleep 1
+done
+if pinchtab health >/dev/null 2>&1; then
+    echo "  Pinchtab server ready (PID ${PINCHTAB_PID})"
+else
+    echo "  Warning: Pinchtab server failed to start, browser automation may not work"
+fi
+
 PORT="${OPENCODE_PORT:-4096}"
 
-echo "[6/6] Starting OpenCode Web UI on port ${PORT}..."
+echo "[7/7] Starting OpenCode Web UI on port ${PORT}..."
 echo "=== Ready ==="
 
 exec opencode web --port "${PORT}" --hostname 0.0.0.0

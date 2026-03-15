@@ -17,6 +17,7 @@ var promptWatchdogPlugin []byte
 
 //go:embed plugins/_cloudcode-instructions.md
 var instructionsFile []byte
+
 const instructionsFileName = "_cloudcode-instructions.md"
 
 const (
@@ -95,7 +96,6 @@ func (m *Manager) ensureDirs() error {
 		}
 	}
 
-
 	pluginPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "plugins", "_cloudcode-telegram.ts")
 	if err := os.WriteFile(pluginPath, telegramPlugin, 0640); err != nil {
 		return fmt.Errorf("write telegram plugin: %w", err)
@@ -111,9 +111,12 @@ func (m *Manager) ensureDirs() error {
 		return fmt.Errorf("ensure instructions file: %w", err)
 	}
 
+	if err := m.ensurePinchtabMCP(); err != nil {
+		return fmt.Errorf("ensure pinchtab mcp: %w", err)
+	}
+
 	return nil
 }
-
 
 // ensureInstructionsFile writes the CloudCode instructions as a standalone
 // instruction file and ensures opencode.jsonc references it via the
@@ -179,6 +182,48 @@ func (m *Manager) ensureInstruction(filename string) error {
 	return os.WriteFile(configPath, out, 0640)
 }
 
+// ensurePinchtabMCP 注入 pinchtab MCP server 到 opencode.jsonc。
+// 前置条件：容器内 pinchtab server 必须由 entrypoint.sh 先于 opencode 启动，
+// `pinchtab mcp` 通过 HTTP 连接本地 server 提供浏览器自动化能力。
+func (m *Manager) ensurePinchtabMCP() error {
+	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
+	raw, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read opencode.jsonc: %w", err)
+	}
+
+	stripped := stripJSONCComments(string(raw))
+
+	var cfg map[string]any
+	if len(stripped) > 0 {
+		if err := json.Unmarshal([]byte(stripped), &cfg); err != nil {
+			return nil
+		}
+	} else {
+		cfg = make(map[string]any)
+	}
+
+	servers, _ := cfg["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = make(map[string]any)
+	}
+
+	if _, exists := servers["pinchtab"]; !exists {
+		servers["pinchtab"] = map[string]any{
+			"command": "pinchtab",
+			"args":    []string{"mcp"},
+		}
+		cfg["mcpServers"] = servers
+
+		out, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal opencode.jsonc: %w", err)
+		}
+		return os.WriteFile(configPath, out, 0640)
+	}
+
+	return nil
+}
 
 // stripJSONCComments removes // and /* */ comments from JSONC content.
 func stripJSONCComments(s string) string {

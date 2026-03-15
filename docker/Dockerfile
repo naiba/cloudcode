@@ -69,12 +69,9 @@ RUN bun install -g @fission-ai/openspec@latest
 # Install Pinchtab (browser control for AI agents)
 RUN bun install -g pinchtab@latest
 
-# Install Playwright chromium with all system dependencies (for browser automation skills)
-# --with-deps auto-installs required shared libraries (libatk, libnss3, libgbm, etc.)
+# Chromium + system deps (libatk, libnss3, libgbm, etc.) — required by pinchtab browser server
 RUN npx playwright install --with-deps chromium
-# cloudcode-browser: direct symlink to Playwright's Chromium binary (no --no-sandbox, for programmatic use)
-# chromium-browser: wrapper that injects --no-sandbox (required when running as root in containers)
-# find handles both chrome-linux/ (arm64) and chrome-linux64/ (amd64) directory names across architectures
+# chromium-browser: --no-sandbox wrapper (root in container requires it)
 RUN CHROME_BIN=$(find /root/.cache/ms-playwright/chromium-* -name chrome -type f | head -1) \
     && ln -sf "$CHROME_BIN" /usr/bin/cloudcode-browser \
     && printf '#!/bin/sh\nexec cloudcode-browser --no-sandbox "$@"\n' > /usr/bin/chromium-browser \
