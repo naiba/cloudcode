@@ -211,7 +211,7 @@ func (m *Manager) ensurePinchtabMCP() error {
 	if _, exists := mcp["pinchtab"]; !exists {
 		mcp["pinchtab"] = map[string]any{
 			"type":    "local",
-			"command": []string{"pinchtab", "mcp"},
+			"command": []string{"/usr/local/bin/pinchtab", "mcp"},
 		}
 		cfg["mcp"] = mcp
 		dirty = true

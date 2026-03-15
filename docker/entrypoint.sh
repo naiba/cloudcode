@@ -15,7 +15,21 @@ echo "[3/6] Updating OpenSpec..."
 bun update -g @fission-ai/openspec@latest 2>/dev/null || echo "Warning: OpenSpec update failed, using existing version"
 
 echo "[4/6] Updating Pinchtab..."
-bun update -g pinchtab@latest 2>/dev/null || echo "Warning: Pinchtab update failed, using existing version"
+ARCH=$([ "$(uname -m)" = "aarch64" ] && echo "arm64" || echo "amd64")
+PINCHTAB_LATEST=$(curl -sI "https://github.com/pinchtab/pinchtab/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's|.*/v||;s/\r//')
+if [ -n "$PINCHTAB_LATEST" ]; then
+    PINCHTAB_CURRENT=$(pinchtab --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+    if [ "$PINCHTAB_LATEST" != "$PINCHTAB_CURRENT" ]; then
+        curl -fsSL "https://github.com/pinchtab/pinchtab/releases/download/v${PINCHTAB_LATEST}/pinchtab-linux-${ARCH}" \
+            -o /usr/local/bin/pinchtab && chmod +x /usr/local/bin/pinchtab \
+            && echo "  Pinchtab updated to ${PINCHTAB_LATEST}" \
+            || echo "  Warning: Pinchtab update failed, using existing version"
+    else
+        echo "  Pinchtab ${PINCHTAB_CURRENT} is latest"
+    fi
+else
+    echo "  Warning: Could not check Pinchtab latest version"
+fi
 
 echo "[5/6] Updating skills.sh skills..."
 # .skill-lock.json is bind-mounted at /root/.agents/ so updates are shared across instances
@@ -41,13 +55,13 @@ if [ -f /root/.config/opencode/oh-my-opencode.json ]; then
 fi
 
 echo "[6/7] Starting Pinchtab browser server..."
-PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full pinchtab server >/dev/null 2>&1 &
+PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full /usr/local/bin/pinchtab server >/dev/null 2>&1 &
 PINCHTAB_PID=$!
 for i in $(seq 1 10); do
-    pinchtab health >/dev/null 2>&1 && break
+    /usr/local/bin/pinchtab health >/dev/null 2>&1 && break
     sleep 1
 done
-if pinchtab health >/dev/null 2>&1; then
+if /usr/local/bin/pinchtab health >/dev/null 2>&1; then
     echo "  Pinchtab server ready (PID ${PINCHTAB_PID})"
 else
     echo "  Warning: Pinchtab server failed to start, browser automation may not work"

@@ -67,7 +67,13 @@ RUN bun install -g oh-my-opencode-linux-arm64@latest || true
 RUN bun install -g @fission-ai/openspec@latest
 
 # Install Pinchtab (browser control for AI agents)
-RUN bun install -g pinchtab@latest
+# 直接下载 Rust 二进制到 /usr/local/bin/，不走 npm wrapper。
+# 必须放在 /usr/local/bin 而非 ~/.pinchtab/bin/，因为容器启动时 named volume 挂载到 /root 会覆盖 image 层文件。
+ENV PINCHTAB_VERSION=0.8.1
+RUN ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ] && echo "arm64" || echo "amd64") \
+    && curl -fsSL "https://github.com/pinchtab/pinchtab/releases/download/v${PINCHTAB_VERSION}/pinchtab-linux-${ARCH}" \
+       -o /usr/local/bin/pinchtab \
+    && chmod +x /usr/local/bin/pinchtab
 
 # Chromium + system deps (libatk, libnss3, libgbm, etc.) — required by pinchtab browser server
 RUN npx playwright install --with-deps chromium
