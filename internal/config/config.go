@@ -183,8 +183,6 @@ func (m *Manager) ensureInstruction(filename string) error {
 }
 
 // ensurePinchtabMCP 注入 pinchtab MCP server 到 opencode.jsonc。
-// opencode 的 MCP 字段是 "mcp"（非 "mcpServers"），格式为 {"type":"local","command":[...]}。
-// 同时清理之前误写的 "mcpServers" 字段（opencode 不支持，会导致配置校验失败）。
 func (m *Manager) ensurePinchtabMCP() error {
 	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
 	raw, err := os.ReadFile(configPath)
@@ -204,11 +202,6 @@ func (m *Manager) ensurePinchtabMCP() error {
 	}
 
 	dirty := false
-
-	if _, exists := cfg["mcpServers"]; exists {
-		delete(cfg, "mcpServers")
-		dirty = true
-	}
 
 	mcp, _ := cfg["mcp"].(map[string]any)
 	if mcp == nil {

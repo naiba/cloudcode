@@ -453,12 +453,6 @@ main.container {
     padding-bottom: var(--space-sm);
     border-bottom: 1px solid var(--border-subtle);
 }
-/* card-meta 已废弃，保留以兼容可能的扩展 */
-.instance-card-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
 .instance-card-label {
     font-size: 0.72rem;
     font-weight: 500;
