@@ -55,14 +55,17 @@ if [ -f /root/.config/opencode/oh-my-opencode.json ]; then
 fi
 
 echo "[6/7] Starting Pinchtab browser server..."
-PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full /usr/local/bin/pinchtab server >/dev/null 2>&1 &
-PINCHTAB_PID=$!
+# IDPI 内容扫描在容器内无实际用途，关闭以避免误拦截
+/usr/local/bin/pinchtab config set security.idpi.enabled false >/dev/null 2>&1 || true
+# setsid: 让 pinchtab server 脱离当前 shell 的进程组，exec opencode 后
+# 它直接被 tini(PID 1) 收养而非 node，避免 zombie 堆积
+setsid env PINCHTAB_STEALTH=full /usr/local/bin/pinchtab server >/dev/null 2>&1 &
 for i in $(seq 1 10); do
     /usr/local/bin/pinchtab health >/dev/null 2>&1 && break
     sleep 1
 done
 if /usr/local/bin/pinchtab health >/dev/null 2>&1; then
-    echo "  Pinchtab server ready (PID ${PINCHTAB_PID})"
+    echo "  Pinchtab server ready"
 else
     echo "  Warning: Pinchtab server failed to start, browser automation may not work"
 fi
