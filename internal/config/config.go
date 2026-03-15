@@ -183,8 +183,8 @@ func (m *Manager) ensureInstruction(filename string) error {
 }
 
 // ensurePinchtabMCP 注入 pinchtab MCP server 到 opencode.jsonc。
-// 前置条件：容器内 pinchtab server 必须由 entrypoint.sh 先于 opencode 启动，
-// `pinchtab mcp` 通过 HTTP 连接本地 server 提供浏览器自动化能力。
+// opencode 的 MCP 字段是 "mcp"（非 "mcpServers"），格式为 {"type":"local","command":[...]}。
+// 同时清理之前误写的 "mcpServers" 字段（opencode 不支持，会导致配置校验失败）。
 func (m *Manager) ensurePinchtabMCP() error {
 	configPath := filepath.Join(m.rootDir, DirOpenCodeConfig, "opencode.jsonc")
 	raw, err := os.ReadFile(configPath)
@@ -203,26 +203,36 @@ func (m *Manager) ensurePinchtabMCP() error {
 		cfg = make(map[string]any)
 	}
 
-	servers, _ := cfg["mcpServers"].(map[string]any)
-	if servers == nil {
-		servers = make(map[string]any)
+	dirty := false
+
+	if _, exists := cfg["mcpServers"]; exists {
+		delete(cfg, "mcpServers")
+		dirty = true
 	}
 
-	if _, exists := servers["pinchtab"]; !exists {
-		servers["pinchtab"] = map[string]any{
-			"command": "pinchtab",
-			"args":    []string{"mcp"},
-		}
-		cfg["mcpServers"] = servers
-
-		out, err := json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal opencode.jsonc: %w", err)
-		}
-		return os.WriteFile(configPath, out, 0640)
+	mcp, _ := cfg["mcp"].(map[string]any)
+	if mcp == nil {
+		mcp = make(map[string]any)
 	}
 
-	return nil
+	if _, exists := mcp["pinchtab"]; !exists {
+		mcp["pinchtab"] = map[string]any{
+			"type":    "local",
+			"command": []string{"pinchtab", "mcp"},
+		}
+		cfg["mcp"] = mcp
+		dirty = true
+	}
+
+	if !dirty {
+		return nil
+	}
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal opencode.jsonc: %w", err)
+	}
+	return os.WriteFile(configPath, out, 0640)
 }
 
 // stripJSONCComments removes // and /* */ comments from JSONC content.

@@ -40,7 +40,7 @@ if [ -f /root/.config/opencode/oh-my-opencode.json ]; then
     echo "[*] Global oh-my-opencode config detected"
 fi
 
-echo "[6/6] Starting Pinchtab browser server..."
+echo "[6/7] Starting Pinchtab browser server..."
 PINCHTAB_HEADLESS=true PINCHTAB_STEALTH=full pinchtab >/dev/null 2>&1 &
 PINCHTAB_PID=$!
 for i in $(seq 1 10); do
